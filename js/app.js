@@ -1,0 +1,957 @@
+/* 위클리 — 주간 할 일 보드 (Supabase + SortableJS, no build) */
+(() => {
+  'use strict';
+
+  // ================= utils =================
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const pad = n => String(n).padStart(2, '0');
+  const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const fromYmd = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const mondayOf = d => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+  const today = () => ymd(new Date());
+  const DOW = ['월', '화', '수', '목', '금', '토', '일'];
+  const dowOf = s => DOW[(fromYmd(s).getDay() + 6) % 7];
+  const md = s => { const d = fromYmd(s); return `${d.getMonth() + 1}.${d.getDate()}`; };
+  const dayLabel = s => { const d = fromYmd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일 (${dowOf(s)})`; };
+  const STATUSES = ['기획', '촬영', '편집', '수정대기', '완료'];
+  const GOALS = ['완료', '완성', '기획', '수정', '컨펌', '업로드', '준비'];
+  const PALETTE = ['#7c5cff', '#f03e3e', '#12a16b', '#f08c00', '#3b82f6', '#d6336c', '#0c8599', '#9c36b5', '#e8590c', '#5c940d'];
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
+  const haptic = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (_) { /* noop */ } };
+  const short = (s, n = 14) => (s.length > n ? s.slice(0, n) + '…' : s);
+  function projColor(name) {
+    if (!name) return 'var(--muted)';
+    let h = 0; for (const c of name) h = (h * 31 + c.codePointAt(0)) >>> 0;
+    return PALETTE[h % PALETTE.length];
+  }
+  const ICON = {
+    check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+    close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  };
+  const ls = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (_) { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* noop */ } },
+  };
+
+  // ================= config / client =================
+  const CFG = window.WEEKLY_CONFIG || {};
+  const configured = CFG.supabaseUrl && CFG.supabaseKey && !/YOUR_/.test(CFG.supabaseUrl + CFG.supabaseKey);
+  const sb = configured ? window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'weekly-auth' },
+  }) : null;
+  const appUrl = () => location.origin + location.pathname;
+
+  // ================= state =================
+  const S = {
+    session: null, me: null, entered: false,
+    weekStart: mondayOf(new Date()),
+    tasks: [], plans: [], notes: {}, settings: {}, members: [],
+    filter: 'all', dragging: false, pendingRender: false, lastDragEnd: 0,
+    sheet: null, prevStatus: {}, syncing: false, sortablesReady: false, followToday: true,
+  };
+  const taskById = id => S.tasks.find(t => t.id === id);
+  const planById = id => S.plans.find(p => p.id === id);
+  const bySort = (a, b) => (a.sort - b.sort) || String(a.created_at || '').localeCompare(String(b.created_at || ''));
+  const weekDays = () => [...Array(7)].map((_, i) => ymd(addDays(S.weekStart, i)));
+  const plansOn = d => S.plans.filter(p => p.day === d).sort(bySort);
+  const note = key => S.notes[key] || (S.notes[key] = { key, content: null, rest: false });
+
+  function backlogTasks(ignoreFilter) {
+    const days = new Set(weekDays());
+    const planned = new Set(S.plans.filter(p => p.task_id && days.has(p.day)).map(p => p.task_id));
+    return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && !planned.has(t.id)
+      && (ignoreFilter || S.filter === 'all' || (t.project || '') === S.filter)).sort(bySort);
+  }
+  function upcomingEvents() {
+    const we = ymd(addDays(S.weekStart, 6)), lim = ymd(addDays(S.weekStart, 6 + 42));
+    return S.tasks.filter(t => t.source === 'gcal' && t.status !== '완료' && t.due_date > we && t.due_date <= lim)
+      .sort((a, b) => a.due_date.localeCompare(b.due_date));
+  }
+  function eventsOn(d) {
+    return S.tasks.filter(t => t.due_date && (t.source === 'gcal'
+      ? t.due_date <= d && (t.end_date || t.due_date) >= d
+      : t.due_date === d)).sort((a, b) => (a.source === 'gcal' ? 0 : 1) - (b.source === 'gcal' ? 0 : 1));
+  }
+  function pastUndone() {
+    const td = today(), lim = ymd(addDays(new Date(), -14));
+    return S.plans.filter(p => !p.done && p.day < td && p.day >= lim && !(p.task_id && taskById(p.task_id)?.status === '완료'));
+  }
+  const nextTaskSort = () => S.tasks.reduce((m, t) => Math.max(m, t.sort || 0), 0) + 10;
+
+  // ================= screens =================
+  function show(name) {
+    for (const s of ['loading', 'auth', 'pending', 'config', 'app']) $('#screen-' + s).hidden = s !== name;
+  }
+  function setSync(state) {
+    const el = $('#sync-dot'); if (!el) return;
+    el.className = 'sync-dot' + (state === 'busy' ? ' busy' : state === 'err' ? ' err' : '');
+  }
+  let toastTimer;
+  function toast(msg, action, fn) {
+    const el = $('#toast');
+    el.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button">${esc(action)}</button>` : ''}`;
+    if (action) el.querySelector('button').onclick = () => { el.classList.remove('show'); fn(); };
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), action ? 5500 : 2800);
+  }
+
+  // ================= auth =================
+  function authErr(e) {
+    const m = String(e?.message || e || '').toLowerCase();
+    if (m.includes('invalid login')) return '이메일 또는 비밀번호가 맞지 않아요.';
+    if (m.includes('already registered') || m.includes('already been registered')) return '이미 가입된 이메일이에요. 로그인해주세요.';
+    if (m.includes('not confirmed')) return '메일 인증이 아직이에요. 메일함의 인증 링크를 눌러주세요.';
+    if (m.includes('signups not allowed') || m.includes('signup is disabled')) return '지금은 가입을 받지 않아요. 관리자에게 문의해주세요.';
+    if (m.includes('password')) return '비밀번호는 6자 이상이어야 해요.';
+    if (m.includes('rate limit') || m.includes('too many')) return '요청이 많아요. 잠시 후 다시 시도해주세요.';
+    return e?.message || String(e);
+  }
+  function initAuth() {
+    const form = $('#auth-form'), msg = $('#auth-msg');
+    const setMsg = (t, ok) => { msg.textContent = t || ''; msg.classList.toggle('ok', !!ok); };
+    const vals = () => ({ email: form.elements.email.value.trim(), password: form.elements.password.value });
+    const busy = b => $$('button', form).forEach(x => { x.disabled = b; });
+    form.addEventListener('submit', async e => {
+      e.preventDefault(); setMsg(''); busy(true);
+      const { error } = await sb.auth.signInWithPassword(vals());
+      busy(false);
+      if (error) setMsg(authErr(error));
+    });
+    $('#btn-signup').addEventListener('click', async () => {
+      if (!form.reportValidity()) return;
+      setMsg(''); busy(true);
+      const { data, error } = await sb.auth.signUp({ ...vals(), options: { emailRedirectTo: appUrl() } });
+      busy(false);
+      if (error) return setMsg(authErr(error));
+      if (!data.session) setMsg('메일함에서 인증 링크를 눌러주세요. 인증 후 로그인하면 돼요.', true);
+    });
+    $('#btn-forgot').addEventListener('click', async () => {
+      const { email } = vals();
+      if (!email) { setMsg('이메일을 먼저 입력해주세요.'); form.elements.email.focus(); return; }
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() });
+      setMsg(error ? authErr(error) : '비밀번호 재설정 메일을 보냈어요.', !error);
+    });
+  }
+
+  async function enter() {
+    if (S.entered || !S.session) return;
+    S.entered = true;
+    const hasCache = restoreCache();
+    if (hasCache) { show('app'); render(); } else show('loading');
+    const { data: me, error } = await sb.from('members').select('*').eq('user_id', S.session.user.id).maybeSingle();
+    if (error) {
+      S.entered = false;
+      if (!hasCache) show('auth');
+      toast('연결 오류: ' + error.message);
+      return;
+    }
+    if (!me || !me.approved) { S.entered = false; show('pending'); return; }
+    S.me = me;
+    show('app'); render();
+    await loadAll();
+    subscribe();
+    maybeAutoSync();
+  }
+
+  // ================= data =================
+  let loadSeq = 0;
+  async function loadAll() {
+    const seq = ++loadSeq;
+    setSync('busy');
+    const days = weekDays();
+    const from = ymd(addDays(S.weekStart, -28)), to = ymd(addDays(S.weekStart, 13));
+    const keys = ['week:' + days[0], ...days.map(d => 'day:' + d)];
+    const res = await Promise.all([
+      sb.from('tasks').select('*').eq('archived', false).order('sort').order('created_at'),
+      sb.from('plans').select('*').gte('day', from).lte('day', to).order('sort').order('created_at'),
+      sb.from('notes').select('*').in('key', keys),
+      sb.from('settings').select('*'),
+      sb.from('members').select('*').order('created_at'),
+    ]);
+    if (seq !== loadSeq) return;
+    const err = res.find(r => r.error)?.error;
+    if (err) { setSync('err'); toast('불러오기 실패: ' + err.message); return; }
+    const [t, p, n, st, m] = res.map(r => r.data);
+    S.tasks = t; S.plans = p;
+    S.notes = {}; n.forEach(x => { S.notes[x.key] = x; });
+    S.settings = {}; st.forEach(x => { S.settings[x.key] = x.value; });
+    S.members = m;
+    const mine = m.find(x => x.user_id === S.session?.user.id); if (mine) S.me = mine;
+    setSync('ok'); saveCache(); requestRender();
+  }
+  const cacheKey = () => 'weekly-cache-' + (S.session?.user.id || 'anon');
+  function saveCache() {
+    ls.set(cacheKey(), { weekStart: ymd(S.weekStart), tasks: S.tasks, plans: S.plans, notes: S.notes, settings: S.settings, members: S.members, me: S.me });
+  }
+  function restoreCache() {
+    const c = ls.get(cacheKey(), null);
+    if (!c || !c.me?.approved) return false;
+    Object.assign(S, { tasks: c.tasks || [], plans: c.plans || [], settings: c.settings || {}, members: c.members || [], me: c.me });
+    S.notes = c.weekStart === ymd(S.weekStart) ? (c.notes || {}) : {};
+    return true;
+  }
+
+  let channel = null, reloadTimer = null;
+  function subscribe() {
+    if (channel) return;
+    channel = sb.channel('board');
+    ['tasks', 'plans', 'notes'].forEach(table => channel.on('postgres_changes', { event: '*', schema: 'public', table }, scheduleReload));
+    channel.subscribe();
+  }
+  function scheduleReload() {
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => { if (S.dragging) return scheduleReload(); loadAll(); }, 700);
+  }
+
+  async function persist(ops) {
+    if (!ops || !ops.length) return true;
+    setSync('busy');
+    const res = await Promise.all(ops.map(o => {
+      const q = sb.from(o.table);
+      if (o.op === 'insert') return q.insert(o.row);
+      if (o.op === 'update') return q.update(o.row).eq(o.key || 'id', o.id);
+      if (o.op === 'delete') return q.delete().eq('id', o.id);
+      return q.upsert(o.row, o.opts);
+    }));
+    const err = res.find(r => r.error)?.error;
+    if (err) { console.error(err); setSync('err'); toast('저장 실패: ' + err.message); scheduleReload(); return false; }
+    setSync('ok'); saveCache(); return true;
+  }
+  const taskRow = t => ({ id: t.id, title: t.title, project: t.project, status: t.status, ok: t.ok, memo: t.memo, due_date: t.due_date, source: t.source, sort: t.sort });
+  const planRow = p => ({ id: p.id, task_id: p.task_id, title: p.title, goal: p.goal, day: p.day, done: p.done, sort: p.sort });
+  function newTask(f) {
+    const now = new Date().toISOString();
+    return { id: uuid(), title: f.title, project: f.project ?? null, status: f.status ?? null, ok: !!f.ok, memo: f.memo ?? null,
+      due_date: f.due_date ?? null, end_date: null, location: null, detail: null, source: 'manual', ext_id: null,
+      sort: nextTaskSort(), archived: false, created_at: now, updated_at: now };
+  }
+  function updateTask(t, patch) {
+    Object.assign(t, patch, { updated_at: new Date().toISOString() });
+    if (patch.archived) S.tasks = S.tasks.filter(x => x !== t);
+    render();
+    return persist([{ op: 'update', table: 'tasks', id: t.id, row: patch }]);
+  }
+  function updatePlan(p, patch) {
+    Object.assign(p, patch); render();
+    return persist([{ op: 'update', table: 'plans', id: p.id, row: patch }]);
+  }
+  function resort(list, skipId) {
+    const ops = [];
+    list.forEach((p, i) => {
+      const s = (i + 1) * 10;
+      if (p.sort !== s) { p.sort = s; if (p.id !== skipId) ops.push({ op: 'update', table: 'plans', id: p.id, row: { sort: s } }); }
+    });
+    return ops;
+  }
+  // 작업을 요일에 배정 → ops
+  function assignTask(taskId, day, idx = Infinity, goal = null) {
+    const plan = { id: uuid(), task_id: taskId, title: null, goal, day, done: false, sort: 0, created_at: new Date().toISOString() };
+    const list = plansOn(day);
+    list.splice(Math.min(idx, list.length), 0, plan);
+    S.plans.push(plan);
+    const ops = resort(list, plan.id);
+    return [{ op: 'insert', table: 'plans', row: planRow(plan) }, ...ops];
+  }
+  function addFreePlan(title, day) {
+    const list = plansOn(day);
+    const plan = { id: uuid(), task_id: null, title, goal: null, day, done: false, sort: ((list.at(-1)?.sort) || 0) + 10, created_at: new Date().toISOString() };
+    S.plans.push(plan);
+    return [{ op: 'insert', table: 'plans', row: planRow(plan) }];
+  }
+  function movePlan(planId, day, idx = Infinity) {
+    const p = planById(planId); if (!p) return [];
+    const oldDay = p.day; p.day = day;
+    const list = plansOn(day).filter(x => x.id !== p.id);
+    list.splice(Math.min(idx, list.length), 0, p);
+    const ops = resort(list, p.id);
+    ops.push({ op: 'update', table: 'plans', id: p.id, row: { day, sort: p.sort } });
+    if (oldDay !== day) ops.push(...resort(plansOn(oldDay)));
+    return ops;
+  }
+  function removePlan(p) {
+    S.plans = S.plans.filter(x => x !== p);
+    return [{ op: 'delete', table: 'plans', id: p.id }];
+  }
+  function planToBacklog(planId) {
+    const p = planById(planId); if (!p) return [];
+    const ops = [];
+    if (!p.task_id) {
+      const t = newTask(parseLine(p.title || '새 할 일') || { title: p.title || '새 할 일' });
+      S.tasks.push(t);
+      ops.push({ op: 'insert', table: 'tasks', row: taskRow(t) });
+    }
+    return [...ops, ...removePlan(p)];
+  }
+  async function persistSeq(...groups) { for (const g of groups) { if (!(await persist(g))) return false; } return true; }
+  function togglePlan(p, done = !p.done) {
+    p.done = done; render();
+    persist([{ op: 'update', table: 'plans', id: p.id, row: { done } }]);
+    if (!done) return;
+    haptic(15);
+    const chk = $(`.item.plan[data-id="${p.id}"] .check`); if (chk) chk.classList.add('pop');
+    const td = today(), todays = plansOn(td);
+    if (p.day === td && todays.length > 1 && todays.every(x => x.done)) { haptic([20, 40, 20]); toast('오늘 할 일 끝! 수고했어요 🎉'); return; }
+    const t = p.task_id && taskById(p.task_id);
+    if (t && t.status !== '완료' && !S.plans.some(x => x.task_id === t.id && !x.done && x.id !== p.id)) {
+      toast(`“${short(t.title)}” 작업도 완료로 바꿀까요?`, '작업 완료', () => { updateTask(t, { status: '완료' }); refreshSheet(); });
+    }
+  }
+  function saveNote(n) {
+    S.notes[n.key] = n; render();
+    return persist([{ op: 'upsert', table: 'notes', row: { key: n.key, content: n.content, rest: !!n.rest } }]);
+  }
+  function saveSetting(key, value) {
+    S.settings[key] = value;
+    return persist([{ op: 'upsert', table: 'settings', row: { key, value } }]);
+  }
+
+  // ================= parsing =================
+  const STATUS_ALIASES = [['수정대기', '수정대기'], ['대기', '수정대기'], ['완료', '완료'], ['편집', '편집'], ['기획', '기획'], ['기호기', '기획'], ['촬영', '촬영']];
+  const normStatus = s => { const x = s.replace(/\s/g, ''); return (STATUS_ALIASES.find(([k]) => x.includes(k)) || [])[1] || null; };
+  function parseLine(raw) {
+    let s = String(raw || '').replace(/^\s*([-•*·]|\d+[.)])\s*/, '').trim();
+    if (!s) return null;
+    let ok = false, status = null, project = null;
+    s = s.replace(/\s*(오케이|okay|ok|✅|✔️?)\s*$/i, () => { ok = true; return ''; }).trim();
+    const pm = s.match(/^\[([^\]]+)\]\s*/);
+    if (pm) { project = pm[1].trim(); s = s.slice(pm[0].length); }
+    s = s.replace(/\s*\(([^)]*)\)\s*/g, (m, inner) => { const st = normStatus(inner); if (st && !status) { status = st; return ' '; } return m; })
+      .replace(/\s+/g, ' ').trim();
+    s = s.replace(/\s*(오케이|okay|ok|✅)\s*$/i, () => { ok = true; return ''; }).trim();
+    if (!s) return null;
+    if (!project) project = s.split(' ')[0];
+    const title = pm && !s.startsWith(project) ? `${project} ${s}` : s;
+    return { title, project, status, ok };
+  }
+  const bracketProject = s => (String(s).match(/^\s*\[([^\]]+)\]/) || [])[1] || null;
+
+  // ---- iCal ----
+  function parseICS(text) {
+    const lines = String(text || '').replace(/\r\n?/g, '\n').replace(/\n[ \t]/g, '').split('\n');
+    const out = []; let cur = null;
+    for (const line of lines) {
+      if (line === 'BEGIN:VEVENT') { cur = {}; continue; }
+      if (line === 'END:VEVENT') { if (cur) out.push(icsEvent(cur)); cur = null; continue; }
+      if (!cur) continue;
+      let q = false, i = 0;
+      for (; i < line.length; i++) { const c = line[i]; if (c === '"') q = !q; else if (c === ':' && !q) break; }
+      if (i >= line.length) continue;
+      const left = line.slice(0, i), val = line.slice(i + 1), semi = left.indexOf(';');
+      const name = (semi < 0 ? left : left.slice(0, semi)).toUpperCase();
+      if (!(name in cur)) cur[name] = { val, params: semi < 0 ? '' : left.slice(semi + 1) };
+    }
+    return out;
+  }
+  const icsText = v => v.replace(/\\n/gi, '\n').replace(/\\([,;\\])/g, '$1');
+  function icsDate(p) {
+    if (!p) return null;
+    const m = p.val.trim().match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?/);
+    if (!m) return null;
+    if (!m[4]) return { date: `${m[1]}-${m[2]}-${m[3]}`, allDay: true };
+    if (m[7]) return { date: ymd(new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]))), allDay: false };
+    return { date: `${m[1]}-${m[2]}-${m[3]}`, allDay: false };
+  }
+  function icsEvent(c) {
+    const s = icsDate(c.DTSTART), e = icsDate(c.DTEND);
+    let end = e ? e.date : null;
+    if (s && e && e.allDay) end = ymd(addDays(fromYmd(e.date), -1));
+    if (s && (!end || end < s.date)) end = s.date;
+    return {
+      uid: c.UID?.val || '', rid: c['RECURRENCE-ID']?.val || '',
+      summary: c.SUMMARY ? icsText(c.SUMMARY.val) : '', description: c.DESCRIPTION ? icsText(c.DESCRIPTION.val) : '',
+      location: c.LOCATION ? icsText(c.LOCATION.val) : '', status: (c.STATUS?.val || '').toUpperCase(), start: s?.date || null, end,
+    };
+  }
+  async function syncCalendar(manual) {
+    if (S.syncing) return;
+    if (!S.settings.ics_url) { if (manual) toast('설정에서 구글 캘린더 iCal 주소를 먼저 넣어주세요'); return; }
+    S.syncing = true; setSync('busy');
+    if (manual) toast('구글 캘린더에서 가져오는 중…');
+    try {
+      const { data, error } = await sb.rpc('fetch_ics');
+      if (error) throw error;
+      const kws = (S.settings.cal_keyword || '동준').split(',').map(x => x.trim()).filter(Boolean);
+      const from = ymd(addDays(new Date(), -14)), to = ymd(addDays(new Date(), 180));
+      const seen = new Map();
+      parseICS(data).forEach(e => {
+        if (!e.summary || !e.start || e.status === 'CANCELLED' || e.start < from || e.start > to) return;
+        if (!kws.some(k => e.summary.includes(k))) return;
+        const ext = 'gcal:' + e.uid + (e.rid ? '#' + e.rid : '');
+        seen.set(ext, { ext_id: ext, title: e.summary.trim(), project: bracketProject(e.summary), due_date: e.start, end_date: e.end,
+          location: e.location || null, detail: e.description ? e.description.slice(0, 4000) : null, source: 'gcal' });
+      });
+      const rows = [...seen.values()];
+      if (rows.length) { const r = await sb.from('tasks').upsert(rows, { onConflict: 'ext_id' }); if (r.error) throw r.error; }
+      const gone = S.tasks.filter(t => t.source === 'gcal' && t.due_date >= from && t.due_date <= to && !seen.has(t.ext_id)).map(t => t.id);
+      if (gone.length) await sb.from('tasks').update({ archived: true }).in('id', gone);
+      await saveSetting('cal_synced_at', new Date().toISOString());
+      if (manual) toast(`캘린더 일정 ${rows.length}개를 동기화했어요`);
+      await loadAll();
+      refreshSheet();
+    } catch (e) {
+      setSync('err'); toast('캘린더 동기화 실패: ' + (e.message || e));
+    } finally { S.syncing = false; }
+  }
+  function maybeAutoSync() {
+    if (!S.settings.ics_url) return;
+    const last = Date.parse(S.settings.cal_synced_at || 0) || 0;
+    if (Date.now() - last > 3 * 3600e3) syncCalendar(false);
+  }
+
+  // ================= render =================
+  function requestRender() { if (S.dragging) { S.pendingRender = true; return; } render(); }
+  function flushRender() { if (S.pendingRender) requestRender(); }
+
+  function render() {
+    if ($('#screen-app').hidden) return;
+    S.pendingRender = false;
+    renderHeader(); renderStrip(); renderTray(); renderWeekNote(); renderRollover(); renderWeek();
+    $('#task-titles').innerHTML = S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료').map(t => `<option value="${esc(t.title)}"></option>`).join('');
+    if (!S.sortablesReady) initSortables();
+  }
+
+  function renderHeader() {
+    const days = weekDays(), ws = S.weekStart, we = addDays(ws, 6);
+    $('#week-range').textContent = `${ws.getMonth() + 1}.${ws.getDate()} – ${we.getMonth() + 1}.${we.getDate()}`;
+    const diff = Math.round((ws - mondayOf(new Date())) / (7 * 864e5));
+    const rel = diff === 0 ? '이번 주' : diff === 1 ? '다음 주' : diff === -1 ? '지난 주' : diff > 0 ? `${diff}주 후` : `${-diff}주 전`;
+    const wp = S.plans.filter(p => days.includes(p.day)), done = wp.filter(p => p.done).length;
+    $('#week-rel').textContent = wp.length ? `${rel} · ${done}/${wp.length} 완료` : rel;
+    $('#progress-bar').style.width = wp.length ? `${Math.round(done / wp.length * 100)}%` : '0';
+  }
+
+  function renderStrip() {
+    const days = weekDays(), td = today();
+    $$('.strip-day').forEach((el, i) => {
+      const d = days[i], ps = plansOn(d), dn = ps.filter(p => p.done).length, rest = S.notes['day:' + d]?.rest;
+      const evs = eventsOn(d).filter(t => t.source === 'gcal').length;
+      el.classList.toggle('is-today', d === td);
+      el.classList.toggle('is-rest', !!rest && !ps.length);
+      el.classList.toggle('all-done', ps.length > 0 && dn === ps.length);
+      $('.d', el).textContent = DOW[i];
+      $('.n', el).textContent = fromYmd(d).getDate();
+      $('.c', el).textContent = ps.length ? (dn === ps.length ? '✓' : `${dn}/${ps.length}`) : evs ? '📅' : rest ? '휴식' : '';
+      const drop = $('.strip-drop', el); drop.dataset.day = d; drop.innerHTML = '';
+    });
+  }
+
+  function chipHTML(t) {
+    return `<li class="item chip" data-kind="task" data-id="${t.id}" data-act="open-task" style="--pc:${projColor(t.project)}">
+      <span class="t">${esc(t.title)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
+  }
+  function ddayHTML(d) {
+    const n = Math.round((fromYmd(d) - fromYmd(today())) / 864e5);
+    const label = n === 0 ? 'D-DAY' : n > 0 ? `D-${n}` : `D+${-n}`;
+    return `<span class="dday ${n >= 0 && n <= 2 ? 'soon' : ''}">${label}</span>`;
+  }
+  function renderTray() {
+    $('#tray').classList.toggle('collapsed', !!ls.get('weekly-tray-collapsed', false));
+    $('#btn-tray').textContent = ls.get('weekly-tray-collapsed', false) ? '펼치기' : '접기';
+    const all = backlogTasks(true);
+    const projects = [...new Set(S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료').map(t => t.project || ''))].filter(Boolean);
+    if (S.filter !== 'all' && !projects.includes(S.filter)) S.filter = 'all';
+    $('#filters').innerHTML = projects.length >= 2
+      ? [`<button class="filter ${S.filter === 'all' ? 'on' : ''}" data-act="filter" data-v="all">전체</button>`,
+        ...projects.map(p => `<button class="filter ${S.filter === p ? 'on' : ''}" data-act="filter" data-v="${esc(p)}" style="--pc:${projColor(p)}"><i></i>${esc(p)}</button>`)].join('')
+      : '';
+    const list = backlogTasks();
+    $('#backlog').innerHTML = list.map(chipHTML).join('');
+    $('#backlog-count').textContent = all.length;
+    $('#backlog-hint').hidden = !list.length;
+    const up = upcomingEvents();
+    $('#upcoming').innerHTML = up.map(t => `<li class="item chip cal" data-kind="task" data-id="${t.id}" data-act="open-event" style="--pc:${projColor(t.project)}">${ddayHTML(t.due_date)}<span class="t">${md(t.due_date)}(${dowOf(t.due_date)}) ${esc(t.title)}</span></li>`).join('');
+    $('#upcoming-count').textContent = up.length;
+    const done = S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료').sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+    $('#done-count').textContent = done.length;
+    $('#done-list').innerHTML = done.slice(0, 12).map(t => `<li data-act="open-task" data-id="${t.id}"><span class="pill" data-s="완료">완료</span><span class="t">${esc(t.title)}</span></li>`).join('')
+      + (done.length ? `<li class="more" data-act="archive-done">완료 ${done.length}개 모두 보관하기</li>` : '');
+  }
+  function autosize(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
+  function renderWeekNote() {
+    const el = $('#week-note');
+    if (document.activeElement !== el) { el.value = S.notes['week:' + weekDays()[0]]?.content || ''; autosize(el); }
+  }
+  function renderRollover() {
+    const el = $('#rollover'), cur = ymd(S.weekStart) === ymd(mondayOf(new Date()));
+    const n = cur ? pastUndone().length : 0;
+    el.hidden = !n;
+    if (n) el.innerHTML = `<span>⏪ 지난 미완료 ${n}개</span><button class="btn sm" data-act="rollover">오늘로 가져오기</button>`;
+  }
+  function planHTML(p) {
+    const t = p.task_id ? taskById(p.task_id) : null;
+    const title = t ? t.title : (p.title || '(제목 없음)');
+    const meta = t ? `<div class="item-meta">${t.project ? `<span class="proj" style="--pc:${projColor(t.project)}"><i></i>${esc(t.project)}</span>` : ''}${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}</div>` : '';
+    return `<li class="item plan ${p.done ? 'is-done' : ''}" data-kind="plan" data-id="${p.id}" data-act="open-plan" style="--pc:${projColor(t?.project)}">
+      <button class="check" type="button" data-act="toggle-plan" aria-label="체크">${ICON.check}</button>
+      <div class="item-body"><div class="item-title">${esc(title)}${p.goal ? ` <span class="goal">${esc(p.goal)}</span>` : ''}</div>${meta}</div></li>`;
+  }
+  function eventHTML(t) {
+    const cal = t.source === 'gcal', done = t.status === '완료';
+    return `<div class="event ${done ? 'is-done' : ''}" data-act="open-event" data-id="${t.id}" style="--pc:${projColor(t.project)}">
+      <button class="check" type="button" data-act="toggle-event" data-id="${t.id}" aria-label="체크">${ICON.check}</button>
+      <div class="eb"><span class="tag">${cal ? '📅 일정' : '⏰ 마감'}</span>${esc(t.title)}${t.location ? `<small>📍 ${esc(t.location)}</small>` : ''}</div></div>`;
+  }
+  function renderWeek() {
+    const days = weekDays(), td = today();
+    $$('.day').forEach((art, i) => {
+      const d = days[i], ps = plansOn(d), dn = ps.filter(p => p.done).length, nt = S.notes['day:' + d];
+      art.dataset.day = d;
+      art.classList.toggle('is-today', d === td);
+      art.classList.toggle('is-weekend', i >= 5);
+      art.classList.toggle('is-past', d < td);
+      art.classList.toggle('is-rest', !!nt?.rest);
+      $('.day-head', art).innerHTML = `<button class="day-name" type="button" data-act="open-day" data-day="${d}"><span class="dn">${DOW[i]}</span><span class="dd">${md(d)}</span></button>`
+        + (d === td ? '<span class="today-badge">오늘</span>' : '')
+        + (ps.length ? `<span class="day-count ${dn === ps.length ? 'all' : ''}">${dn === ps.length ? '✓ ' : ''}${dn}/${ps.length}</span>` : '');
+      $('.day-extra', art).innerHTML = (nt?.rest ? '<div class="rest-banner">🌙 휴식</div>' : '')
+        + (nt?.content ? `<div class="day-memo" data-act="open-day" data-day="${d}">${esc(nt.content)}</div>` : '');
+      $('.events', art).innerHTML = eventsOn(d).map(eventHTML).join('');
+      const ul = $('.day-list', art); ul.dataset.day = d; ul.innerHTML = ps.map(planHTML).join('');
+      $('.quick-add input', art).placeholder = `+ ${DOW[i]}요일에 추가`;
+    });
+  }
+
+  function buildSkeleton() {
+    const week = $('#week'), strip = $('#strip');
+    for (let i = 0; i < 7; i++) {
+      week.insertAdjacentHTML('beforeend', `<article class="day card" data-i="${i}">
+        <header class="day-head"></header><div class="day-extra"></div><div class="events"></div>
+        <ul class="day-list"></ul>
+        <form class="quick-add" data-i="${i}"><input type="text" enterkeyhint="done" list="task-titles" autocomplete="off" aria-label="${DOW[i]}요일에 추가"></form>
+      </article>`);
+      strip.insertAdjacentHTML('beforeend', `<div class="strip-day" data-act="jump-day" data-i="${i}" role="button" tabindex="0"><span class="d"></span><span class="n"></span><span class="c"></span><ul class="strip-drop" data-strip="1"></ul></div>`);
+    }
+    document.body.insertAdjacentHTML('beforeend', '<datalist id="task-titles"></datalist>');
+  }
+
+  // ================= drag & drop =================
+  function initSortables() {
+    if (!window.Sortable) return;
+    S.sortablesReady = true;
+    const common = {
+      animation: 160, forceFallback: true, fallbackOnBody: true, fallbackTolerance: 4,
+      delay: 200, delayOnTouchOnly: true, touchStartThreshold: 6,
+      scroll: true, scrollSensitivity: 90, scrollSpeed: 16, bubbleScroll: true,
+      draggable: '.item', ghostClass: 'sortable-ghost', chosenClass: 'sortable-chosen',
+      onStart() { S.dragging = true; document.body.classList.add('is-dragging'); haptic(10); },
+      onEnd: onDragEnd,
+    };
+    Sortable.create($('#backlog'), { ...common, group: { name: 'board', pull: true, put: (to, from, el) => el.dataset.kind === 'plan' } });
+    Sortable.create($('#upcoming'), { ...common, sort: false, group: { name: 'board', pull: 'clone', put: false } });
+    $$('.day-list').forEach(el => Sortable.create(el, { ...common, group: { name: 'board', pull: true, put: true } }));
+    $$('.strip-drop').forEach(el => Sortable.create(el, { ...common, sort: false, draggable: '.never-drag', emptyInsertThreshold: 0, group: { name: 'board', pull: false, put: true } }));
+  }
+  function onDragEnd(evt) {
+    S.dragging = false; S.lastDragEnd = Date.now();
+    document.body.classList.remove('is-dragging');
+    const el = evt.item, kind = el.dataset.kind, id = el.dataset.id, to = evt.to, from = evt.from;
+    let ops = [], seq = null;
+    if (!(from === to && evt.oldIndex === evt.newIndex)) {
+      const toDay = to.dataset.day;
+      const idx = to.dataset.strip ? Infinity : evt.newIndex;
+      if (toDay && kind === 'task') { ops = assignTask(id, toDay, idx, taskById(id)?.source === 'gcal' ? '준비' : null); toastAssigned(id, toDay); }
+      else if (toDay && kind === 'plan') ops = movePlan(id, toDay, idx);
+      else if (to.id === 'backlog' && kind === 'plan') {
+        const p = planById(id);
+        ops = planToBacklog(id);
+        if (p && !p.task_id) { seq = ops; ops = []; }
+      } else if (to.id === 'backlog' && kind === 'task') {
+        const list = backlogTasks(); const [m] = list.splice(evt.oldIndex, 1); list.splice(evt.newIndex, 0, m);
+        list.forEach((t, i) => { const s = (i + 1) * 10; if (t.sort !== s) { t.sort = s; ops.push({ op: 'update', table: 'tasks', id: t.id, row: { sort: s } }); } });
+      }
+    }
+    render();
+    if (seq) persistSeq(seq.filter(o => o.table === 'tasks'), seq.filter(o => o.table !== 'tasks'));
+    else persist(ops);
+  }
+  function toastAssigned(taskId, day) {
+    const t = taskById(taskId); if (!t) return;
+    if (!$('#screen-app').hidden && window.matchMedia('(max-width: 1179px)').matches) toast(`${dowOf(day)}요일에 “${short(t.title)}” 배정`);
+  }
+
+  // ================= sheets =================
+  const SHEETS = {};
+  function openSheet(type, id, extra) {
+    const wasOpen = !!S.sheet;
+    S.sheet = { type, id, ...(extra || {}) };
+    $('#sheet-body').innerHTML = SHEETS[type](id, S.sheet);
+    const sh = $('#sheet');
+    if (!wasOpen) {
+      sh.hidden = false;
+      requestAnimationFrame(() => requestAnimationFrame(() => sh.classList.add('open')));
+      try { history.pushState({ sheet: true }, ''); } catch (_) { /* noop */ }
+    }
+    afterSheet();
+  }
+  function refreshSheet() {
+    if (!S.sheet) return;
+    const panel = $('.sheet-panel'), top = panel.scrollTop;
+    $('#sheet-body').innerHTML = SHEETS[S.sheet.type](S.sheet.id, S.sheet);
+    panel.scrollTop = top;
+    afterSheet();
+  }
+  function afterSheet() {
+    if (S.sheet?.type === 'add') { renderAddPreview(); }
+    $$('#sheet-body textarea[data-autosize]').forEach(autosize);
+  }
+  function closeSheet(fromPop) {
+    if (!S.sheet) return;
+    const ae = document.activeElement; if (ae && $('#sheet').contains(ae)) ae.blur();
+    S.sheet = null;
+    const sh = $('#sheet'); sh.classList.remove('open');
+    setTimeout(() => { if (!S.sheet) { sh.hidden = true; $('#sheet-body').innerHTML = ''; } }, 260);
+    if (!fromPop && history.state?.sheet) { try { history.back(); } catch (_) { /* noop */ } }
+    flushRender();
+  }
+  const head = (title, input) => `<div class="sh-head">${input || `<h3>${title}</h3>`}<button class="icon-btn" type="button" data-act="close-sheet" aria-label="닫기">${ICON.close}</button></div>`;
+  const days7 = (act, isOn, extraAttr = '') => {
+    const td = today();
+    return `<div class="days7">${weekDays().map((d, i) => `<button type="button" data-act="${act}" data-day="${d}" ${extraAttr} class="${isOn(d) ? 'on' : ''} ${d === td ? 'today' : ''}">${DOW[i]}<small>${fromYmd(d).getDate()}</small></button>`).join('')}</div>`;
+  };
+  const statusSeg = (cur, tid) => `<div class="seg">${['', ...STATUSES].map(s => `<button type="button" data-act="task-status" data-s="${s}" ${tid ? `data-tid="${tid}"` : ''} class="${(cur || '') === s ? 'on' : ''}">${s || '없음'}</button>`).join('')}</div>`;
+  const linkify = s => esc(s).replace(/https?:\/\/[^\s<]+/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+
+  SHEETS.task = id => {
+    const t = taskById(id); if (!t) return head('삭제된 항목이에요');
+    const days = weekDays();
+    const on = new Set(S.plans.filter(p => p.task_id === id && days.includes(p.day)).map(p => p.day));
+    return head('', `<input class="sh-title" data-field="title" value="${esc(t.title)}" aria-label="제목" enterkeyhint="done">`)
+      + `<div class="sh-sec"><p class="sh-label">진행 상태</p>${statusSeg(t.status)}</div>
+      <div class="sh-sec"><p class="sh-label">이번 주 요일 배정 <span>· 여러 날 선택 가능</span></p>${days7('task-day', d => on.has(d))}</div>
+      <div class="sh-sec"><label class="toggle"><span>오케이 (컨펌 완료)</span><input type="checkbox" data-field="ok" ${t.ok ? 'checked' : ''}></label></div>
+      <div class="sh-sec row">
+        <label class="field"><span>프로젝트</span><input data-field="project" value="${esc(t.project || '')}" placeholder="예: 교촌"></label>
+        <label class="field"><span>마감일</span><input type="date" data-field="due_date" value="${t.due_date || ''}"></label>
+      </div>
+      <div class="sh-sec"><label class="field"><span>메모</span><textarea data-field="memo" data-autosize rows="3" placeholder="링크, 수정사항 등">${esc(t.memo || '')}</textarea></label></div>
+      <div class="sh-actions"><button class="btn danger" type="button" data-act="task-delete">삭제</button><button class="btn" type="button" data-act="task-archive">보관</button><button class="btn primary" type="button" data-act="close-sheet">완료</button></div>`;
+  };
+
+  SHEETS.event = id => {
+    const t = taskById(id); if (!t) return head('삭제된 항목이에요');
+    const days = weekDays();
+    const on = new Set(S.plans.filter(p => p.task_id === id && days.includes(p.day)).map(p => p.day));
+    const range = t.end_date && t.end_date !== t.due_date ? `${dayLabel(t.due_date)} – ${dayLabel(t.end_date)}` : dayLabel(t.due_date);
+    return head(`📅 ${esc(t.title)}`)
+      + `<p class="muted" style="margin:-4px 0 10px">${range}${t.location ? ` · 📍 ${esc(t.location)}` : ''}</p>
+      <div class="sh-sec"><label class="toggle"><span>완료 체크</span><input type="checkbox" data-field="evdone" ${t.status === '완료' ? 'checked' : ''}></label></div>
+      <div class="sh-sec"><p class="sh-label">이번 주에 준비 일정 잡기</p>${days7('task-day', d => on.has(d), 'data-goal="준비"')}</div>
+      ${t.detail ? `<div class="sh-sec"><p class="sh-label">캘린더 내용</p><div class="detail">${linkify(t.detail)}</div></div>` : ''}
+      <div class="sh-sec"><label class="field"><span>메모</span><textarea data-field="memo" data-autosize rows="2" placeholder="준비물, 장비 등">${esc(t.memo || '')}</textarea></label></div>
+      <p class="hint">구글 캘린더에서 가져온 일정이에요. 제목·날짜는 캘린더에서 바꾸면 다음 동기화 때 반영돼요.</p>
+      <div class="sh-actions"><button class="btn" type="button" data-act="task-archive">숨기기</button><button class="btn primary" type="button" data-act="close-sheet">닫기</button></div>`;
+  };
+
+  SHEETS.plan = id => {
+    const p = planById(id); if (!p) return head('삭제된 항목이에요');
+    const t = p.task_id ? taskById(p.task_id) : null;
+    const title = t ? t.title : (p.title || '');
+    return head(esc(title), t ? '' : `<input class="sh-title" data-field="ptitle" value="${esc(title)}" aria-label="제목" enterkeyhint="done">`)
+      + `<p class="muted" style="margin:-4px 0 10px">${dayLabel(p.day)}</p>
+      <div class="sh-sec"><label class="toggle"><span>이날 할 일 완료</span><input type="checkbox" data-field="pdone" ${p.done ? 'checked' : ''}></label></div>
+      <div class="sh-sec"><label class="field"><span>이날 목표</span><input data-field="goal" value="${esc(p.goal || '')}" placeholder="예: 완료, 1차 편집, 컨펌 받기" enterkeyhint="done"></label>
+        <div class="sugg">${GOALS.map(g => `<button type="button" data-act="plan-goal" data-goal="${g}">${g}</button>`).join('')}</div></div>
+      ${t ? `<div class="sh-sec"><p class="sh-label">작업 상태 · ${esc(t.title)}</p>${statusSeg(t.status, t.id)}</div>` : ''}
+      <div class="sh-sec"><p class="sh-label">다른 요일로 옮기기</p>${days7('plan-move', d => d === p.day)}</div>
+      <div class="sh-sec"><p class="sh-label">다른 요일에도 추가 (복제)</p>${days7('plan-copy', d => S.plans.some(x => x !== p && x.day === d && (t ? x.task_id === t.id : x.title === p.title)))}</div>
+      <div class="sh-actions"><button class="btn danger" type="button" data-act="plan-remove">요일에서 빼기</button>
+      ${t ? '<button class="btn" type="button" data-act="plan-open-task">작업 열기</button>' : '<button class="btn" type="button" data-act="plan-to-task">할 일로 보내기</button>'}
+      <button class="btn primary" type="button" data-act="close-sheet">완료</button></div>`;
+  };
+
+  SHEETS.day = d => {
+    const n = S.notes['day:' + d] || {};
+    return head(dayLabel(d))
+      + `<div class="sh-sec"><label class="toggle"><span>🌙 휴식일로 표시</span><input type="checkbox" data-field="rest" ${n.rest ? 'checked' : ''}></label></div>
+      <div class="sh-sec"><label class="field"><span>요일 메모</span><textarea data-field="daymemo" data-autosize rows="3" placeholder="예: 오후 미팅, 외근">${esc(n.content || '')}</textarea></label></div>
+      <div class="sh-actions"><button class="btn primary" type="button" data-act="close-sheet">완료</button></div>`;
+  };
+
+  SHEETS.add = (_, ctx) => {
+    const target = ctx.target || '';
+    return head('할 일 추가')
+      + `<label class="field"><span>한 줄에 하나씩 · <b>프로젝트 제목 (상태) 오케이</b> 형식 인식</span>
+        <textarea id="add-text" rows="5" placeholder="교촌 DID (편집) 오케이&#10;촌스러버 통합본 (기획)&#10;소프라노 뮤비">${esc(ctx.text || '')}</textarea></label>
+      <ul class="preview" id="add-preview"></ul>
+      <div class="sh-sec"><p class="sh-label">어디에 둘까요?</p>
+        <div class="seg" style="margin-bottom:6px"><button type="button" data-act="add-target" data-day="" class="${target ? '' : 'on'}">할 일 목록 (미배정)</button></div>
+        ${days7('add-target', d => d === target)}</div>
+      <div class="sh-actions"><button class="btn" type="button" data-act="close-sheet">취소</button><button class="btn primary" type="button" data-act="add-submit" id="add-submit">추가</button></div>`;
+  };
+  function renderAddPreview() {
+    const ta = $('#add-text'); if (!ta) return;
+    const items = ta.value.split('\n').map(parseLine).filter(Boolean);
+    $('#add-preview').innerHTML = items.map(x => `<li style="--pc:${projColor(x.project)}"><b>${esc(x.title)}</b>${x.status ? `<span class="pill" data-s="${esc(x.status)}">${esc(x.status)}</span>` : ''}${x.ok ? '<span class="okb">OK</span>' : ''}<span class="muted" style="font-size:12px">· ${esc(x.project)}</span></li>`).join('');
+    const btn = $('#add-submit'); if (btn) { btn.textContent = items.length ? `${items.length}개 추가` : '추가'; btn.disabled = !items.length; }
+  }
+
+  let deferredPrompt = null;
+  SHEETS.settings = () => {
+    const isOwner = S.me?.role === 'owner';
+    const synced = S.settings.cal_synced_at ? new Date(S.settings.cal_synced_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '아직 없음';
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !navigator.standalone;
+    return head('설정')
+      + `<div class="sh-sec"><label class="field"><span>내 이름</span><input data-field="myname" value="${esc(S.me?.display_name || '')}" placeholder="예: 동준"></label>
+        <p class="hint">${esc(S.session?.user.email || '')}</p></div>
+      <div class="sh-sec"><p class="sh-label">📅 구글 캘린더 연동</p>
+        <label class="field"><span>iCal 비공개 주소</span><input type="password" data-field="ics_url" value="${esc(S.settings.ics_url || '')}" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false"></label>
+        <label class="field" style="margin-top:8px"><span>가져올 키워드 (쉼표로 여러 개)</span><input data-field="cal_keyword" value="${esc(S.settings.cal_keyword || '동준')}"></label>
+        <div class="row" style="margin-top:8px"><button class="btn" type="button" data-act="cal-sync">지금 동기화</button></div>
+        <p class="hint">마지막 동기화: ${synced} · 앱을 열 때 3시간마다 자동으로 가져와요.</p>
+        <div class="tip">구글 캘린더(PC) → ⚙️ 설정 → 왼쪽 <b>내 캘린더의 설정</b>에서 캘린더 선택 → <b>캘린더 통합</b> → <b>iCal 형식의 비공개 주소</b> 복사해서 위에 붙여넣기</div></div>
+      ${isOwner ? `<div class="sh-sec"><p class="sh-label">👥 멤버</p>${S.members.map(m => `<div class="member"><div class="who"><b>${esc(m.display_name || m.email)}</b><small>${esc(m.email || '')} · ${m.role === 'owner' ? '관리자' : m.approved ? '멤버' : '승인 대기'}</small></div>
+          ${m.role === 'owner' ? '' : `${m.approved ? `<button class="btn sm" type="button" data-act="member-approve" data-id="${m.user_id}" data-v="0">해제</button>` : `<button class="btn sm primary" type="button" data-act="member-approve" data-id="${m.user_id}" data-v="1">승인</button>`}<button class="btn sm danger" type="button" data-act="member-remove" data-id="${m.user_id}">삭제</button>`}</div>`).join('')}
+        <p class="hint">다른 사람이 같은 주소에서 가입하면 여기서 승인해야 보드를 볼 수 있어요.</p></div>` : ''}
+      <div class="sh-sec"><p class="sh-label">📱 앱으로 쓰기</p>
+        ${deferredPrompt ? '<button class="btn primary block" type="button" data-act="install">홈 화면에 앱 설치</button>' : ''}
+        <div class="tip">${ios ? '<b>아이폰</b>: Safari 하단 <b>공유</b> 버튼 → <b>홈 화면에 추가</b>' : '<b>안드로이드/PC 크롬</b>: 주소창 오른쪽 <b>설치</b> 아이콘 또는 메뉴(⋮) → <b>앱 설치</b> / <b>홈 화면에 추가</b>'}</div></div>
+      <div class="sh-actions"><button class="btn danger" type="button" data-act="logout">로그아웃</button><button class="btn primary" type="button" data-act="close-sheet">닫기</button></div>`;
+  };
+
+  SHEETS.recovery = () => head('새 비밀번호 설정')
+    + `<label class="field"><span>새 비밀번호 (6자 이상)</span><input type="password" id="new-pw" minlength="6" autocomplete="new-password"></label>
+    <div class="sh-actions"><button class="btn primary" type="button" data-act="save-pw">저장</button></div>`;
+
+  // ---- field changes inside sheets ----
+  function onField(f, v) {
+    const sh = S.sheet; if (!sh) return;
+    if (sh.type === 'task' || sh.type === 'event') {
+      const t = taskById(sh.id); if (!t) return;
+      if (f === 'evdone') {
+        if (v) S.prevStatus[t.id] = t.status;
+        updateTask(t, { status: v ? '완료' : (S.prevStatus[t.id] ?? null) });
+        return;
+      }
+      if (['title', 'project', 'due_date', 'memo', 'ok'].includes(f)) {
+        let val = typeof v === 'string' ? v.trim() : v;
+        if (f === 'title' && !val) { refreshSheet(); return; }
+        if (val === '') val = null;
+        updateTask(t, { [f]: val });
+      }
+    } else if (sh.type === 'plan') {
+      const p = planById(sh.id); if (!p) return;
+      if (f === 'goal') updatePlan(p, { goal: v.trim() || null });
+      if (f === 'ptitle' && v.trim()) updatePlan(p, { title: v.trim() });
+      if (f === 'pdone') togglePlan(p, v);
+    } else if (sh.type === 'day') {
+      const n = { ...note('day:' + sh.id) };
+      if (f === 'rest') n.rest = v;
+      if (f === 'daymemo') n.content = v.trim() || null;
+      saveNote(n);
+    } else if (sh.type === 'settings') {
+      if (f === 'myname') {
+        const name = v.trim(); if (S.me) S.me.display_name = name;
+        sb.rpc('set_my_name', { p_name: name }).then(({ error }) => toast(error ? '저장 실패: ' + error.message : '이름을 저장했어요'));
+      }
+      if (f === 'ics_url' || f === 'cal_keyword') {
+        saveSetting(f, v.trim()).then(ok => { if (ok && f === 'ics_url' && v.trim()) syncCalendar(true); });
+      }
+    }
+  }
+
+  // ================= actions =================
+  const A = {};
+  A['week-prev'] = () => changeWeek(-1);
+  A['week-next'] = () => changeWeek(1);
+  A['week-today'] = () => changeWeek(0);
+  function changeWeek(dir) {
+    S.weekStart = dir === 0 ? mondayOf(new Date()) : addDays(S.weekStart, dir * 7);
+    S.followToday = ymd(S.weekStart) === ymd(mondayOf(new Date()));
+    S.notes = {};
+    render(); loadAll();
+    if (dir === 0) window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  A['jump-day'] = a => {
+    const art = $$('.day')[+a.dataset.i];
+    if (art) art.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  A['toggle-tray'] = () => { ls.set('weekly-tray-collapsed', !ls.get('weekly-tray-collapsed', false)); renderTray(); };
+  A.filter = a => { S.filter = a.dataset.v; renderTray(); };
+  A['open-task'] = (a, id) => {
+    const t = taskById(id); if (!t) return;
+    openSheet(t.source === 'gcal' ? 'event' : 'task', id);
+  };
+  A['open-event'] = (a, id) => { const t = taskById(id); if (t) openSheet(t.source === 'gcal' ? 'event' : 'task', id); };
+  A['open-plan'] = (a, id) => openSheet('plan', id);
+  A['open-day'] = a => openSheet('day', a.dataset.day);
+  A['open-add'] = () => openSheet('add', null, { target: '' });
+  A['open-settings'] = () => openSheet('settings');
+  A['close-sheet'] = () => closeSheet();
+  A['toggle-plan'] = (a, id) => { const p = planById(id); if (p) togglePlan(p); };
+  A['toggle-event'] = a => {
+    const t = taskById(a.dataset.id); if (!t) return;
+    const done = t.status !== '완료';
+    if (done) { S.prevStatus[t.id] = t.status; haptic(15); }
+    updateTask(t, { status: done ? '완료' : (S.prevStatus[t.id] ?? null) });
+  };
+  A.rollover = () => {
+    const td = today(), items = pastUndone().sort((a, b) => a.day.localeCompare(b.day) || a.sort - b.sort);
+    let ops = [];
+    items.forEach(p => { ops = ops.concat(movePlan(p.id, td, Infinity)); });
+    render(); persist(ops);
+    toast(`${items.length}개를 오늘로 옮겼어요`);
+  };
+  A['task-status'] = a => {
+    const t = taskById(a.dataset.tid || S.sheet?.id); if (!t) return;
+    const s = a.dataset.s || null;
+    updateTask(t, { status: s }); refreshSheet();
+    if (s === '완료') { haptic(15); toast(`“${short(t.title)}” 완료! 👏`); }
+  };
+  A['task-day'] = a => {
+    const t = taskById(S.sheet?.id); if (!t) return;
+    const d = a.dataset.day, ex = S.plans.find(p => p.task_id === t.id && p.day === d);
+    const ops = ex ? removePlan(ex) : assignTask(t.id, d, Infinity, a.dataset.goal || null);
+    render(); refreshSheet(); persist(ops);
+  };
+  A['task-archive'] = () => {
+    const t = taskById(S.sheet?.id); if (!t) return;
+    closeSheet(); updateTask(t, { archived: true });
+    toast('보관했어요', '되돌리기', () => { t.archived = false; S.tasks.push(t); updateTask(t, { archived: false }); });
+  };
+  A['task-delete'] = () => {
+    const t = taskById(S.sheet?.id); if (!t) return;
+    if (!confirm(`“${t.title}” 작업을 삭제할까요?\n요일 배정도 함께 지워져요.`)) return;
+    S.tasks = S.tasks.filter(x => x !== t); S.plans = S.plans.filter(p => p.task_id !== t.id);
+    closeSheet(); render(); persist([{ op: 'delete', table: 'tasks', id: t.id }]);
+  };
+  A['archive-done'] = () => {
+    const done = S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료');
+    if (!done.length || !confirm(`완료된 작업 ${done.length}개를 보관할까요? (목록에서 숨겨져요)`)) return;
+    const ids = new Set(done.map(t => t.id));
+    S.tasks = S.tasks.filter(t => !ids.has(t.id)); render();
+    persist(done.map(t => ({ op: 'update', table: 'tasks', id: t.id, row: { archived: true } })));
+  };
+  A['plan-goal'] = a => { const p = planById(S.sheet?.id); if (p) { updatePlan(p, { goal: a.dataset.goal }); refreshSheet(); } };
+  A['plan-move'] = a => { const p = planById(S.sheet?.id); if (!p || p.day === a.dataset.day) return; const ops = movePlan(p.id, a.dataset.day); render(); refreshSheet(); persist(ops); toast(`${dowOf(a.dataset.day)}요일로 옮겼어요`); };
+  A['plan-copy'] = a => {
+    const p = planById(S.sheet?.id); if (!p) return;
+    const ops = p.task_id ? assignTask(p.task_id, a.dataset.day, Infinity, p.goal) : addFreePlan(p.title, a.dataset.day);
+    render(); refreshSheet(); persist(ops); toast(`${dowOf(a.dataset.day)}요일에도 추가했어요`);
+  };
+  A['plan-remove'] = () => {
+    const p = planById(S.sheet?.id); if (!p) return;
+    const copy = { ...p };
+    closeSheet(); const ops = removePlan(p); render(); persist(ops);
+    toast('요일에서 뺐어요', '되돌리기', () => { S.plans.push(copy); render(); persist([{ op: 'insert', table: 'plans', row: planRow(copy) }]); });
+  };
+  A['plan-to-task'] = () => {
+    const p = planById(S.sheet?.id); if (!p) return;
+    const ops = planToBacklog(p.id); closeSheet(); render();
+    persistSeq(ops.filter(o => o.table === 'tasks'), ops.filter(o => o.table !== 'tasks'));
+    toast('할 일 목록으로 보냈어요');
+  };
+  A['plan-open-task'] = () => { const p = planById(S.sheet?.id); if (p?.task_id) openSheet('task', p.task_id); };
+  A['add-target'] = a => { if (!S.sheet) return; S.sheet.target = a.dataset.day || ''; S.sheet.text = $('#add-text')?.value || ''; refreshSheet(); };
+  A['add-submit'] = () => {
+    const items = ($('#add-text')?.value || '').split('\n').map(parseLine).filter(Boolean);
+    if (!items.length) return;
+    const target = S.sheet?.target || '';
+    const tasks = items.map(x => { const t = newTask(x); S.tasks.push(t); return t; });
+    let planOps = [];
+    if (target) tasks.forEach(t => { planOps = planOps.concat(assignTask(t.id, target)); });
+    closeSheet(); render();
+    persistSeq(tasks.map(t => ({ op: 'insert', table: 'tasks', row: taskRow(t) })), planOps);
+    toast(target ? `${tasks.length}개를 ${dowOf(target)}요일에 추가했어요` : `${tasks.length}개를 할 일에 추가했어요`);
+  };
+  A['cal-sync'] = () => syncCalendar(true);
+  A['member-approve'] = a => {
+    const m = S.members.find(x => x.user_id === a.dataset.id); if (!m) return;
+    m.approved = a.dataset.v === '1'; refreshSheet();
+    persist([{ op: 'update', table: 'members', key: 'user_id', id: m.user_id, row: { approved: m.approved } }]);
+  };
+  A['member-remove'] = a => {
+    const m = S.members.find(x => x.user_id === a.dataset.id); if (!m || !confirm(`${m.email} 멤버를 삭제할까요?`)) return;
+    S.members = S.members.filter(x => x !== m); refreshSheet();
+    sb.from('members').delete().eq('user_id', m.user_id).then(({ error }) => error && toast('삭제 실패: ' + error.message));
+  };
+  A.install = async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; refreshSheet(); };
+  A.logout = async () => { closeSheet(); await sb.auth.signOut(); };
+  A.reload = () => location.reload();
+  A['save-pw'] = async () => {
+    const pw = $('#new-pw')?.value || '';
+    if (pw.length < 6) { toast('6자 이상 입력해주세요'); return; }
+    const { error } = await sb.auth.updateUser({ password: pw });
+    if (error) toast('변경 실패: ' + error.message); else { closeSheet(); toast('비밀번호를 바꿨어요'); }
+  };
+
+  // ================= static wiring =================
+  function initStatic() {
+    buildSkeleton();
+    document.addEventListener('click', e => {
+      const a = e.target.closest('[data-act]'); if (!a) return;
+      const act = a.dataset.act;
+      if (/^open-(task|event|plan)$|^toggle-(plan|event)$/.test(act) && Date.now() - S.lastDragEnd < 350) return;
+      const fn = A[act]; if (!fn) return;
+      const id = a.dataset.id || a.closest('[data-id]')?.dataset.id;
+      fn(a, id, e);
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && S.sheet) { closeSheet(); return; }
+      const strip = e.target.closest?.('.strip-day');
+      if (strip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); A['jump-day'](strip); return; }
+      if (S.sheet || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('#screen-app').hidden || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'ArrowLeft') changeWeek(-1);
+      else if (e.key === 'ArrowRight') changeWeek(1);
+      else if (e.key === 't') changeWeek(0);
+      else if (e.key === 'n') { e.preventDefault(); A['open-add'](); }
+    });
+    $('#week').addEventListener('submit', e => {
+      e.preventDefault();
+      const form = e.target.closest('.quick-add'); if (!form) return;
+      const input = $('input', form), text = input.value.trim(); if (!text) return;
+      const day = weekDays()[+form.dataset.i];
+      const t = S.tasks.find(x => x.source !== 'gcal' && x.status !== '완료' && x.title === text);
+      const ops = t ? assignTask(t.id, day) : addFreePlan(text, day);
+      input.value = ''; render(); persist(ops);
+    });
+    const wn = $('#week-note');
+    wn.addEventListener('input', () => autosize(wn));
+    wn.addEventListener('change', () => {
+      const key = 'week:' + weekDays()[0];
+      saveNote({ ...note(key), content: wn.value.trim() || null });
+    });
+    const body = $('#sheet-body');
+    body.addEventListener('change', e => {
+      const f = e.target.dataset.field; if (!f) return;
+      onField(f, e.target.type === 'checkbox' ? e.target.checked : e.target.value, e.target);
+    });
+    body.addEventListener('input', e => {
+      if (e.target.id === 'add-text') renderAddPreview();
+      if (e.target.matches('textarea[data-autosize]')) autosize(e.target);
+    });
+    body.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.matches('input.sh-title, input[data-field="goal"]')) { e.preventDefault(); e.target.blur(); }
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.id === 'add-text') { e.preventDefault(); A['add-submit'](); }
+    });
+    window.addEventListener('popstate', () => { if (S.sheet) closeSheet(true); });
+    window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || !S.me) return;
+      // 자정/새 주가 지났으면 '이번 주'를 보고 있던 경우 자동으로 따라감
+      if (S.followToday && ymd(S.weekStart) !== ymd(mondayOf(new Date()))) { changeWeek(0); return; }
+      render(); scheduleReload();
+    });
+    const setTopH = () => document.documentElement.style.setProperty('--top-h', ($('.topbar')?.offsetHeight || 132) + 'px');
+    window.addEventListener('resize', setTopH); setTimeout(setTopH, 50);
+    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  function boot() {
+    initStatic();
+    if (!sb) { show('config'); return; }
+    initAuth();
+    sb.auth.onAuthStateChange((event, session) => {
+      S.session = session;
+      if (event === 'PASSWORD_RECOVERY') setTimeout(() => { show('app'); openSheet('recovery'); }, 400);
+      if (event === 'SIGNED_OUT') { S.entered = false; S.me = null; if (channel) { sb.removeChannel(channel); channel = null; } show('auth'); return; }
+      if (session && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) setTimeout(enter, 0);
+      if (!session && event === 'INITIAL_SESSION') show('auth');
+    });
+  }
+  boot();
+})();

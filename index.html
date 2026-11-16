@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>위클리 · 주간 할 일</title>
+  <meta name="description" content="할 일을 요일로 끌어다 놓는 주간 TO-DO 보드">
+  <meta name="theme-color" content="#7c5cff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16131f" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="위클리">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="css/app.css?v=1">
+</head>
+<body>
+  <!-- 로딩 -->
+  <div id="screen-loading" class="screen center">
+    <div class="loader"></div>
+  </div>
+
+  <!-- 로그인 -->
+  <div id="screen-auth" class="screen center" hidden>
+    <form id="auth-form" class="auth-card" autocomplete="on">
+      <img src="icons/icon.svg" alt="" class="auth-logo" width="64" height="64">
+      <h1>위클리</h1>
+      <p class="muted">할 일을 요일로 끌어다 놓고, 매일 체크하세요.</p>
+      <label class="field"><span>이메일</span>
+        <input type="email" name="email" required autocomplete="email" inputmode="email" placeholder="you@example.com">
+      </label>
+      <label class="field"><span>비밀번호</span>
+        <input type="password" name="password" required minlength="6" autocomplete="current-password" placeholder="6자 이상">
+      </label>
+      <p id="auth-msg" class="auth-msg" role="status"></p>
+      <button type="submit" class="btn primary block" data-mode="login">로그인</button>
+      <button type="button" class="btn ghost block" id="btn-signup">처음이에요 · 가입하기</button>
+      <button type="button" class="linkish" id="btn-forgot">비밀번호를 잊었어요</button>
+    </form>
+  </div>
+
+  <!-- 승인 대기 -->
+  <div id="screen-pending" class="screen center" hidden>
+    <div class="auth-card">
+      <img src="icons/icon.svg" alt="" class="auth-logo" width="64" height="64">
+      <h1>승인 대기 중</h1>
+      <p class="muted">가입이 완료됐어요. 관리자가 승인하면 보드를 볼 수 있어요.</p>
+      <button class="btn primary block" data-act="reload">다시 확인</button>
+      <button class="btn ghost block" data-act="logout">로그아웃</button>
+    </div>
+  </div>
+
+  <!-- 설정 필요 -->
+  <div id="screen-config" class="screen center" hidden>
+    <div class="auth-card">
+      <h1>설정이 필요해요</h1>
+      <p class="muted">js/config.js 에 Supabase URL 과 키를 넣어주세요.</p>
+    </div>
+  </div>
+
+  <!-- 메인 앱 -->
+  <div id="screen-app" class="screen" hidden>
+    <header class="topbar">
+      <div class="topbar-row">
+        <button class="icon-btn" data-act="week-prev" aria-label="지난 주">
+          <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <button class="week-title" data-act="week-today" aria-label="이번 주로">
+          <strong id="week-range"></strong>
+          <span id="week-rel" class="week-rel"></span>
+        </button>
+        <button class="icon-btn" data-act="week-next" aria-label="다음 주">
+          <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <span class="spacer"></span>
+        <span id="sync-dot" class="sync-dot" title="동기화 상태"></span>
+        <button class="icon-btn" data-act="open-settings" aria-label="설정">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        </button>
+      </div>
+      <div class="progress" aria-hidden="true"><i id="progress-bar"></i></div>
+      <!-- 요일 스트립 (여기에 끌어다 놓아도 배정됨) -->
+      <nav id="strip" class="strip" aria-label="요일 바로가기"></nav>
+    </header>
+
+    <main class="main">
+      <!-- 미배정 할 일 -->
+      <section class="tray card" id="tray">
+        <div class="tray-head">
+          <h2>할 일 <span id="backlog-count" class="count"></span></h2>
+          <span class="spacer"></span>
+          <button class="chip-btn" data-act="toggle-tray" id="btn-tray" aria-expanded="true">접기</button>
+        </div>
+        <div id="filters" class="filters"></div>
+        <div class="tray-body" id="tray-body">
+          <ul id="backlog" class="chips" data-list="backlog"></ul>
+          <p class="hint" id="backlog-hint">길게 눌러 요일로 끌어다 놓거나, 눌러서 요일을 고르세요.</p>
+          <details class="sub" id="upcoming-wrap">
+            <summary>📅 다가오는 캘린더 일정 <span id="upcoming-count" class="count"></span></summary>
+            <ul id="upcoming" class="chips" data-list="upcoming"></ul>
+          </details>
+          <details class="sub" id="done-wrap">
+            <summary>✓ 완료된 작업 <span id="done-count" class="count"></span></summary>
+            <ul id="done-list" class="done-list"></ul>
+          </details>
+        </div>
+      </section>
+
+      <!-- 주간 메모 -->
+      <section class="week-note card">
+        <textarea id="week-note" rows="1" placeholder="이번 주 메모 (예: 월–금 편집타임)"></textarea>
+      </section>
+
+      <!-- 롤오버 배너 -->
+      <div id="rollover" class="rollover" hidden></div>
+
+      <!-- 요일 -->
+      <section id="week" class="week"></section>
+      <p class="foot muted">위클리 · 실시간 동기화</p>
+    </main>
+
+    <button class="fab" data-act="open-add" aria-label="할 일 추가">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+  </div>
+
+  <!-- 바텀시트 -->
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-backdrop" data-act="close-sheet"></div>
+    <div class="sheet-panel" role="dialog" aria-modal="true">
+      <div class="sheet-grip"></div>
+      <div id="sheet-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="vendor/supabase.js"></script>
+  <script src="vendor/Sortable.min.js"></script>
+  <script src="js/config.js?v=1"></script>
+  <script src="js/app.js?v=1"></script>
+</body>
+</html>
