@@ -1,4 +1,4 @@
-/* 위클리 — 주간 할 일 보드 (Supabase + SortableJS, no build) */
+/* 위클리 — 주간/월간 할 일 보드 (Supabase + SortableJS, no build) */
 (() => {
   'use strict';
 
@@ -11,6 +11,7 @@
   const fromYmd = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
   const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
   const mondayOf = d => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+  const firstOfMonth = d => new Date(d.getFullYear(), d.getMonth(), 1);
   const today = () => ymd(new Date());
   const DOW = ['월', '화', '수', '목', '금', '토', '일'];
   const dowOf = s => DOW[(fromYmd(s).getDay() + 6) % 7];
@@ -18,16 +19,14 @@
   const dayLabel = s => { const d = fromYmd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일 (${dowOf(s)})`; };
   const STATUSES = ['기획', '촬영', '편집', '수정대기', '완료'];
   const GOALS = ['완료', '완성', '기획', '수정', '컨펌', '업로드', '준비'];
-  const PALETTE = ['#7c5cff', '#f03e3e', '#12a16b', '#f08c00', '#3b82f6', '#d6336c', '#0c8599', '#9c36b5', '#e8590c', '#5c940d'];
+  const KINDS = ['촬영', '편집', '개인'];
+  const KIND_CLASS = { 촬영: 'k-shoot', 편집: 'k-edit', 개인: 'k-personal' };
+  const KIND_GCOLOR = { 촬영: 'RED', 편집: 'BLUE', 개인: 'GREEN' };
+  const kindCls = k => KIND_CLASS[k] || 'k-none';
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
     : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
   const haptic = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (_) { /* noop */ } };
   const short = (s, n = 14) => (s.length > n ? s.slice(0, n) + '…' : s);
-  function projColor(name) {
-    if (!name) return 'var(--muted)';
-    let h = 0; for (const c of name) h = (h * 31 + c.codePointAt(0)) >>> 0;
-    return PALETTE[h % PALETTE.length];
-  }
   const ICON = {
     check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
@@ -36,6 +35,19 @@
     get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (_) { return d; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* noop */ } },
   };
+
+  // ---- 일정 종류 추론 (촬영 / 편집 / 개인) ----
+  const PERSONAL_RE = /휴가|개인|예비군|병원|약속|생일|휴무|연차|반차|가족|여행/;
+  const SHOOT_RE = /촬영|스케치|인터뷰|공연|행사|현장|로케|녹화|중계|답사/;
+  const EDIT_RE = /편집|수정|컨펌|렌더|자막|색보정|믹싱|모션|마감|완성|납품/;
+  function inferKind(title, source, status) {
+    const t = String(title || '');
+    if (PERSONAL_RE.test(t)) return '개인';
+    if (status === '촬영' || SHOOT_RE.test(t)) return '촬영';
+    if (EDIT_RE.test(t)) return '편집';
+    if (source === 'gcal') return /^\s*\[/.test(t) && !/^\s*\[동준\]/.test(t) ? '촬영' : '개인';
+    return '편집';
+  }
 
   // ================= config / client =================
   const CFG = window.WEEKLY_CONFIG || {};
@@ -48,27 +60,43 @@
   // ================= state =================
   const S = {
     session: null, me: null, entered: false,
-    weekStart: mondayOf(new Date()),
+    view: ls.get('weekly-view', 'week') === 'month' ? 'month' : 'week',
+    weekStart: mondayOf(new Date()), month: firstOfMonth(new Date()),
     tasks: [], plans: [], notes: {}, settings: {}, members: [],
-    filter: 'all', dragging: false, pendingRender: false, lastDragEnd: 0,
+    filter: 'all', kindFilter: 'all', dragging: false, pendingRender: false, lastDragEnd: 0,
     sheet: null, prevStatus: {}, syncing: false, sortablesReady: false, followToday: true,
   };
   const taskById = id => S.tasks.find(t => t.id === id);
   const planById = id => S.plans.find(p => p.id === id);
   const bySort = (a, b) => (a.sort - b.sort) || String(a.created_at || '').localeCompare(String(b.created_at || ''));
   const weekDays = () => [...Array(7)].map((_, i) => ymd(addDays(S.weekStart, i)));
+  function monthDays() {
+    const first = S.month, last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+    const out = []; for (let d = mondayOf(first), end = addDays(mondayOf(last), 6); d <= end; d = addDays(d, 1)) out.push(ymd(d));
+    return out;
+  }
+  const periodDays = () => (S.view === 'month' ? monthDays() : weekDays());
   const plansOn = d => S.plans.filter(p => p.day === d).sort(bySort);
   const note = key => S.notes[key] || (S.notes[key] = { key, content: null, rest: false });
+  const kindOfTask = t => (t ? (t.kind || inferKind(t.title, t.source, t.status)) : '편집');
+  const kindOfPlan = p => { const t = p.task_id && taskById(p.task_id); return t ? kindOfTask(t) : (p.kind || inferKind(p.title, 'manual')); };
+  const planTitle = p => { const t = p.task_id && taskById(p.task_id); return t ? t.title : (p.title || '(제목 없음)'); };
+  const keywords = () => (S.settings.cal_keyword || '동준').split(',').map(x => x.trim()).filter(Boolean);
+  const compactTitle = s => String(s).replace(/_[^_]*$/, m => (keywords().some(k => m.includes(k)) ? '' : m)).trim();
+  const isCurrentPeriod = () => (S.view === 'month'
+    ? ymd(S.month) === ymd(firstOfMonth(new Date()))
+    : ymd(S.weekStart) === ymd(mondayOf(new Date())));
 
   function backlogTasks(ignoreFilter) {
-    const days = new Set(weekDays());
+    const days = new Set(periodDays());
     const planned = new Set(S.plans.filter(p => p.task_id && days.has(p.day)).map(p => p.task_id));
     return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && !planned.has(t.id)
-      && (ignoreFilter || S.filter === 'all' || (t.project || '') === S.filter)).sort(bySort);
+      && (ignoreFilter || ((S.filter === 'all' || (t.project || '') === S.filter) && (S.kindFilter === 'all' || kindOfTask(t) === S.kindFilter))))
+      .sort(bySort);
   }
   function upcomingEvents() {
-    const we = ymd(addDays(S.weekStart, 6)), lim = ymd(addDays(S.weekStart, 6 + 42));
-    return S.tasks.filter(t => t.source === 'gcal' && t.status !== '완료' && t.due_date > we && t.due_date <= lim)
+    const pd = periodDays(), end = pd[pd.length - 1], lim = ymd(addDays(fromYmd(end), 42));
+    return S.tasks.filter(t => t.source === 'gcal' && t.status !== '완료' && t.due_date > end && t.due_date <= lim)
       .sort((a, b) => a.due_date.localeCompare(b.due_date));
   }
   function eventsOn(d) {
@@ -98,6 +126,12 @@
     el.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), action ? 5500 : 2800);
+  }
+  function applyTheme(t) {
+    if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', t);
+    const dark = t === 'dark' || (t === 'auto' && !matchMedia('(prefers-color-scheme: light)').matches);
+    const meta = $('meta[name="theme-color"]'); if (meta) meta.content = dark ? '#0e0d13' : '#f3f2f8';
   }
 
   // ================= auth =================
@@ -163,9 +197,9 @@
   async function loadAll() {
     const seq = ++loadSeq;
     setSync('busy');
-    const days = weekDays();
-    const from = ymd(addDays(S.weekStart, -28)), to = ymd(addDays(S.weekStart, 13));
-    const keys = ['week:' + days[0], ...days.map(d => 'day:' + d)];
+    const pd = periodDays();
+    const from = ymd(addDays(fromYmd(pd[0]), -28)), to = ymd(addDays(fromYmd(pd[pd.length - 1]), 13));
+    const keys = [...new Set(['week:' + weekDays()[0], ...pd.map(d => 'day:' + d)])];
     const res = await Promise.all([
       sb.from('tasks').select('*').eq('archived', false).order('sort').order('created_at'),
       sb.from('plans').select('*').gte('day', from).lte('day', to).order('sort').order('created_at'),
@@ -186,13 +220,12 @@
   }
   const cacheKey = () => 'weekly-cache-' + (S.session?.user.id || 'anon');
   function saveCache() {
-    ls.set(cacheKey(), { weekStart: ymd(S.weekStart), tasks: S.tasks, plans: S.plans, notes: S.notes, settings: S.settings, members: S.members, me: S.me });
+    ls.set(cacheKey(), { tasks: S.tasks, plans: S.plans, notes: S.notes, settings: S.settings, members: S.members, me: S.me });
   }
   function restoreCache() {
     const c = ls.get(cacheKey(), null);
     if (!c || !c.me?.approved) return false;
-    Object.assign(S, { tasks: c.tasks || [], plans: c.plans || [], settings: c.settings || {}, members: c.members || [], me: c.me });
-    S.notes = c.weekStart === ymd(S.weekStart) ? (c.notes || {}) : {};
+    Object.assign(S, { tasks: c.tasks || [], plans: c.plans || [], settings: c.settings || {}, members: c.members || [], me: c.me, notes: c.notes || {} });
     return true;
   }
 
@@ -222,12 +255,13 @@
     if (err) { console.error(err); setSync('err'); toast('저장 실패: ' + err.message); scheduleReload(); return false; }
     setSync('ok'); saveCache(); return true;
   }
-  const taskRow = t => ({ id: t.id, title: t.title, project: t.project, status: t.status, ok: t.ok, memo: t.memo, due_date: t.due_date, source: t.source, sort: t.sort });
-  const planRow = p => ({ id: p.id, task_id: p.task_id, title: p.title, goal: p.goal, day: p.day, done: p.done, sort: p.sort });
+  const taskRow = t => ({ id: t.id, title: t.title, project: t.project, status: t.status, ok: t.ok, memo: t.memo, due_date: t.due_date, source: t.source, sort: t.sort, kind: t.kind });
+  const planRow = p => ({ id: p.id, task_id: p.task_id, title: p.title, goal: p.goal, day: p.day, done: p.done, sort: p.sort, kind: p.kind ?? null });
   function newTask(f) {
     const now = new Date().toISOString();
     return { id: uuid(), title: f.title, project: f.project ?? null, status: f.status ?? null, ok: !!f.ok, memo: f.memo ?? null,
       due_date: f.due_date ?? null, end_date: null, location: null, detail: null, source: 'manual', ext_id: null,
+      kind: f.kind || inferKind(f.title, 'manual', f.status),
       sort: nextTaskSort(), archived: false, created_at: now, updated_at: now };
   }
   function updateTask(t, patch) {
@@ -248,18 +282,17 @@
     });
     return ops;
   }
-  // 작업을 요일에 배정 → ops
   function assignTask(taskId, day, idx = Infinity, goal = null) {
-    const plan = { id: uuid(), task_id: taskId, title: null, goal, day, done: false, sort: 0, created_at: new Date().toISOString() };
+    const plan = { id: uuid(), task_id: taskId, title: null, goal, day, done: false, sort: 0, kind: null, created_at: new Date().toISOString() };
     const list = plansOn(day);
     list.splice(Math.min(idx, list.length), 0, plan);
     S.plans.push(plan);
     const ops = resort(list, plan.id);
     return [{ op: 'insert', table: 'plans', row: planRow(plan) }, ...ops];
   }
-  function addFreePlan(title, day) {
+  function addFreePlan(title, day, kind) {
     const list = plansOn(day);
-    const plan = { id: uuid(), task_id: null, title, goal: null, day, done: false, sort: ((list.at(-1)?.sort) || 0) + 10, created_at: new Date().toISOString() };
+    const plan = { id: uuid(), task_id: null, title, goal: null, day, done: false, sort: ((list.at(-1)?.sort) || 0) + 10, kind: kind || inferKind(title, 'manual'), created_at: new Date().toISOString() };
     S.plans.push(plan);
     return [{ op: 'insert', table: 'plans', row: planRow(plan) }];
   }
@@ -281,16 +314,22 @@
     const p = planById(planId); if (!p) return [];
     const ops = [];
     if (!p.task_id) {
-      const t = newTask(parseLine(p.title || '새 할 일') || { title: p.title || '새 할 일' });
+      const parsed = parseLine(p.title || '새 할 일') || { title: p.title || '새 할 일' };
+      const t = newTask({ ...parsed, kind: p.kind || parsed.kind });
       S.tasks.push(t);
       ops.push({ op: 'insert', table: 'tasks', row: taskRow(t) });
     }
     return [...ops, ...removePlan(p)];
   }
   async function persistSeq(...groups) { for (const g of groups) { if (!(await persist(g))) return false; } return true; }
+  function quickAdd(text, day) {
+    const t = S.tasks.find(x => x.source !== 'gcal' && x.status !== '완료' && x.title === text);
+    return t ? assignTask(t.id, day) : addFreePlan(text, day);
+  }
   function togglePlan(p, done = !p.done) {
     p.done = done; render();
     persist([{ op: 'update', table: 'plans', id: p.id, row: { done } }]);
+    if (S.sheet?.type === 'day') refreshSheet();
     if (!done) return;
     haptic(15);
     const chk = $(`.item.plan[data-id="${p.id}"] .check`); if (chk) chk.classList.add('pop');
@@ -316,17 +355,20 @@
   function parseLine(raw) {
     let s = String(raw || '').replace(/^\s*([-•*·]|\d+[.)])\s*/, '').trim();
     if (!s) return null;
-    let ok = false, status = null, project = null;
+    let ok = false, status = null, project = null, kind = null;
     s = s.replace(/\s*(오케이|okay|ok|✅|✔️?)\s*$/i, () => { ok = true; return ''; }).trim();
     const pm = s.match(/^\[([^\]]+)\]\s*/);
     if (pm) { project = pm[1].trim(); s = s.slice(pm[0].length); }
-    s = s.replace(/\s*\(([^)]*)\)\s*/g, (m, inner) => { const st = normStatus(inner); if (st && !status) { status = st; return ' '; } return m; })
-      .replace(/\s+/g, ' ').trim();
+    s = s.replace(/\s*\(([^)]*)\)\s*/g, (m, inner) => {
+      if (/개인/.test(inner) && !kind) { kind = '개인'; return ' '; }
+      const st = normStatus(inner); if (st && !status) { status = st; return ' '; } return m;
+    }).replace(/\s+/g, ' ').trim();
     s = s.replace(/\s*(오케이|okay|ok|✅)\s*$/i, () => { ok = true; return ''; }).trim();
     if (!s) return null;
     if (!project) project = s.split(' ')[0];
     const title = pm && !s.startsWith(project) ? `${project} ${s}` : s;
-    return { title, project, status, ok };
+    if (!kind && status === '촬영') kind = '촬영';
+    return { title, project, status, ok, kind };
   }
   const bracketProject = s => (String(s).match(/^\s*\[([^\]]+)\]/) || [])[1] || null;
 
@@ -375,7 +417,7 @@
     try {
       const { data, error } = await sb.rpc('fetch_ics');
       if (error) throw error;
-      const kws = (S.settings.cal_keyword || '동준').split(',').map(x => x.trim()).filter(Boolean);
+      const kws = keywords();
       const from = ymd(addDays(new Date(), -14)), to = ymd(addDays(new Date(), 180));
       const seen = new Map();
       parseICS(data).forEach(e => {
@@ -385,8 +427,14 @@
         seen.set(ext, { ext_id: ext, title: e.summary.trim(), project: bracketProject(e.summary), due_date: e.start, end_date: e.end,
           location: e.location || null, detail: e.description ? e.description.slice(0, 4000) : null, source: 'gcal' });
       });
+      const known = new Set(S.tasks.map(t => t.ext_id).filter(Boolean));
       const rows = [...seen.values()];
-      if (rows.length) { const r = await sb.from('tasks').upsert(rows, { onConflict: 'ext_id' }); if (r.error) throw r.error; }
+      const fresh = rows.filter(r => !known.has(r.ext_id)).map(r => ({ ...r, kind: inferKind(r.title, 'gcal') }));
+      const existing = rows.filter(r => known.has(r.ext_id));
+      for (const group of [fresh, existing]) {
+        if (!group.length) continue;
+        const r = await sb.from('tasks').upsert(group, { onConflict: 'ext_id' }); if (r.error) throw r.error;
+      }
       const gone = S.tasks.filter(t => t.source === 'gcal' && t.due_date >= from && t.due_date <= to && !seen.has(t.ext_id)).map(t => t.id);
       if (gone.length) await sb.from('tasks').update({ archived: true }).in('id', gone);
       await saveSetting('cal_synced_at', new Date().toISOString());
@@ -403,6 +451,47 @@
     if (Date.now() - last > 3 * 3600e3) syncCalendar(false);
   }
 
+  // ---- 구글 캘린더에 일정 추가 (추가 전용 · 삭제 기능 없음) ----
+  function calTitle(ev) {
+    const kw = keywords()[0] || '';
+    let t = String(ev.title || '').trim();
+    if (!t || !kw || t.includes(kw)) return t;
+    return ev.kind === '개인' ? `[${kw}] ${t}` : `${t}_${kw}`;
+  }
+  const plus2h = hm => { const [h, m] = hm.split(':').map(Number); return `${pad(Math.min(23, h + 2))}:${pad(m)}`; };
+  function gcalTemplateUrl(ev, title) {
+    const ds = ev.date.replace(/-/g, '');
+    let dates;
+    if (ev.st) {
+      dates = `${ds}T${ev.st.replace(':', '')}00/${(ev.end || ev.date).replace(/-/g, '')}T${(ev.et || plus2h(ev.st)).replace(':', '')}00`;
+    } else {
+      const last = ev.end && ev.end > ev.date ? ev.end : ev.date;
+      dates = `${ds}/${ymd(addDays(fromYmd(last), 1)).replace(/-/g, '')}`;
+    }
+    return 'https://calendar.google.com/calendar/render?' + new URLSearchParams({ action: 'TEMPLATE', text: title, dates, details: ev.memo || '', location: ev.loc || '', ctz: 'Asia/Seoul' });
+  }
+  async function addCalendarEvent(ev) {
+    const title = calTitle(ev);
+    const url = String(S.settings.gas_url || '').trim();
+    if (!url) {
+      window.open(gcalTemplateUrl(ev, title), '_blank', 'noopener');
+      toast('구글 캘린더 창에서 저장을 눌러주세요 · 설정에서 연결하면 바로 추가돼요');
+      return true;
+    }
+    const payload = { action: 'add', title, start: ev.date, end: ev.end && ev.end > ev.date ? ev.end : null,
+      startTime: ev.st || null, endTime: ev.st ? (ev.et || plus2h(ev.st)) : null, location: ev.loc || '', description: ev.memo || '', color: KIND_GCOLOR[ev.kind] || null };
+    const res = await fetch(url, { method: 'POST', body: JSON.stringify(payload) });
+    const data = await res.json().catch(() => ({ ok: false, error: '응답을 읽을 수 없어요 (연결 주소를 확인해주세요)' }));
+    if (!data.ok) throw new Error(data.error || '추가 실패');
+    const row = { ext_id: 'gcal:' + data.id, title, project: bracketProject(title), kind: ev.kind, due_date: ev.date,
+      end_date: ev.end && ev.end > ev.date ? ev.end : ev.date, location: ev.loc || null, detail: ev.memo || null, source: 'gcal' };
+    const r = await sb.from('tasks').upsert(row, { onConflict: 'ext_id' });
+    if (r.error) throw r.error;
+    toast(`📅 구글 캘린더에 “${short(title, 18)}” 추가했어요`);
+    loadAll();
+    return true;
+  }
+
   // ================= render =================
   function requestRender() { if (S.dragging) { S.pendingRender = true; return; } render(); }
   function flushRender() { if (S.pendingRender) requestRender(); }
@@ -410,65 +499,82 @@
   function render() {
     if ($('#screen-app').hidden) return;
     S.pendingRender = false;
-    renderHeader(); renderStrip(); renderTray(); renderWeekNote(); renderRollover(); renderWeek();
+    document.body.classList.toggle('view-week', S.view === 'week');
+    document.body.classList.toggle('view-month', S.view === 'month');
+    $$('.view-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === S.view));
+    renderHeader(); renderTray();
+    if (S.view === 'week') { renderStrip(); renderWeekNote(); renderRollover(); renderWeek(); } else renderMonth();
     $('#task-titles').innerHTML = S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료').map(t => `<option value="${esc(t.title)}"></option>`).join('');
     if (!S.sortablesReady) initSortables();
   }
 
   function renderHeader() {
-    const days = weekDays(), ws = S.weekStart, we = addDays(ws, 6);
-    $('#week-range').textContent = `${ws.getMonth() + 1}.${ws.getDate()} – ${we.getMonth() + 1}.${we.getDate()}`;
-    const diff = Math.round((ws - mondayOf(new Date())) / (7 * 864e5));
-    const rel = diff === 0 ? '이번 주' : diff === 1 ? '다음 주' : diff === -1 ? '지난 주' : diff > 0 ? `${diff}주 후` : `${-diff}주 전`;
-    const wp = S.plans.filter(p => days.includes(p.day)), done = wp.filter(p => p.done).length;
-    $('#week-rel').textContent = wp.length ? `${rel} · ${done}/${wp.length} 완료` : rel;
-    $('#progress-bar').style.width = wp.length ? `${Math.round(done / wp.length * 100)}%` : '0';
+    let title, rel, ps;
+    if (S.view === 'month') {
+      const m = S.month, now = new Date();
+      const diff = (m.getFullYear() - now.getFullYear()) * 12 + m.getMonth() - now.getMonth();
+      title = `${m.getFullYear()}년 ${m.getMonth() + 1}월`;
+      rel = diff === 0 ? '이번 달' : diff === 1 ? '다음 달' : diff === -1 ? '지난 달' : diff > 0 ? `${diff}달 후` : `${-diff}달 전`;
+      const prefix = `${m.getFullYear()}-${pad(m.getMonth() + 1)}-`;
+      ps = S.plans.filter(p => p.day.startsWith(prefix));
+    } else {
+      const days = weekDays(), ws = S.weekStart, we = addDays(ws, 6);
+      title = `${ws.getMonth() + 1}.${ws.getDate()} – ${we.getMonth() + 1}.${we.getDate()}`;
+      const diff = Math.round((ws - mondayOf(new Date())) / (7 * 864e5));
+      rel = diff === 0 ? '이번 주' : diff === 1 ? '다음 주' : diff === -1 ? '지난 주' : diff > 0 ? `${diff}주 후` : `${-diff}주 전`;
+      ps = S.plans.filter(p => days.includes(p.day));
+    }
+    const done = ps.filter(p => p.done).length;
+    $('#week-range').textContent = title;
+    $('#week-rel').textContent = ps.length ? `${rel} · ${done}/${ps.length} 완료` : rel;
+    $('#progress-bar').style.width = ps.length ? `${Math.round(done / ps.length * 100)}%` : '0';
   }
 
   function renderStrip() {
     const days = weekDays(), td = today();
     $$('.strip-day').forEach((el, i) => {
       const d = days[i], ps = plansOn(d), dn = ps.filter(p => p.done).length, rest = S.notes['day:' + d]?.rest;
-      const evs = eventsOn(d).filter(t => t.source === 'gcal').length;
+      const kinds = [...eventsOn(d).filter(t => t.status !== '완료').map(kindOfTask), ...ps.filter(p => !p.done).map(kindOfPlan)];
       el.classList.toggle('is-today', d === td);
       el.classList.toggle('is-rest', !!rest && !ps.length);
       el.classList.toggle('all-done', ps.length > 0 && dn === ps.length);
       $('.d', el).textContent = DOW[i];
       $('.n', el).textContent = fromYmd(d).getDate();
-      $('.c', el).textContent = ps.length ? (dn === ps.length ? '✓' : `${dn}/${ps.length}`) : evs ? '📅' : rest ? '휴식' : '';
+      $('.c', el).innerHTML = kinds.length ? kinds.slice(0, 4).map(k => `<i class="${kindCls(k)}"></i>`).join('') : rest ? '휴식' : '';
       const drop = $('.strip-drop', el); drop.dataset.day = d; drop.innerHTML = '';
     });
   }
 
-  function chipHTML(t) {
-    return `<li class="item chip" data-kind="task" data-id="${t.id}" data-act="open-task" style="--pc:${projColor(t.project)}">
-      <span class="t">${esc(t.title)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
-  }
   function ddayHTML(d) {
     const n = Math.round((fromYmd(d) - fromYmd(today())) / 864e5);
     const label = n === 0 ? 'D-DAY' : n > 0 ? `D-${n}` : `D+${-n}`;
     return `<span class="dday ${n >= 0 && n <= 2 ? 'soon' : ''}">${label}</span>`;
   }
+  function chipHTML(t) {
+    return `<li class="item chip ${kindCls(kindOfTask(t))}" data-kind="task" data-id="${t.id}" data-act="open-task">
+      <span class="t">${esc(t.title)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
+  }
   function renderTray() {
-    $('#tray').classList.toggle('collapsed', !!ls.get('weekly-tray-collapsed', false));
-    $('#btn-tray').textContent = ls.get('weekly-tray-collapsed', false) ? '펼치기' : '접기';
+    const collapsed = !!ls.get('weekly-tray-collapsed', false);
+    $('#tray').classList.toggle('collapsed', collapsed);
+    $('#btn-tray').textContent = collapsed ? '펼치기' : '접기';
     const all = backlogTasks(true);
     const projects = [...new Set(S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료').map(t => t.project || ''))].filter(Boolean);
     if (S.filter !== 'all' && !projects.includes(S.filter)) S.filter = 'all';
-    $('#filters').innerHTML = projects.length >= 2
-      ? [`<button class="filter ${S.filter === 'all' ? 'on' : ''}" data-act="filter" data-v="all">전체</button>`,
-        ...projects.map(p => `<button class="filter ${S.filter === p ? 'on' : ''}" data-act="filter" data-v="${esc(p)}" style="--pc:${projColor(p)}"><i></i>${esc(p)}</button>`)].join('')
-      : '';
+    const kindChips = [`<button class="filter ${S.kindFilter === 'all' && S.filter === 'all' ? 'on' : ''}" data-act="kfilter" data-v="all">전체</button>`,
+      ...KINDS.map(k => `<button class="filter kind ${kindCls(k)} ${S.kindFilter === k ? 'on' : ''}" data-act="kfilter" data-v="${k}"><i></i>${k}</button>`)];
+    const projChips = projects.length >= 2 ? ['<span class="filter-sep"></span>', ...projects.map(p => `<button class="filter ${S.filter === p ? 'on' : ''}" data-act="filter" data-v="${esc(p)}">${esc(p)}</button>`)] : [];
+    $('#filters').innerHTML = [...kindChips, ...projChips].join('');
     const list = backlogTasks();
     $('#backlog').innerHTML = list.map(chipHTML).join('');
     $('#backlog-count').textContent = all.length;
     $('#backlog-hint').hidden = !list.length;
     const up = upcomingEvents();
-    $('#upcoming').innerHTML = up.map(t => `<li class="item chip cal" data-kind="task" data-id="${t.id}" data-act="open-event" style="--pc:${projColor(t.project)}">${ddayHTML(t.due_date)}<span class="t">${md(t.due_date)}(${dowOf(t.due_date)}) ${esc(t.title)}</span></li>`).join('');
+    $('#upcoming').innerHTML = up.map(t => `<li class="item chip cal ${kindCls(kindOfTask(t))}" data-kind="task" data-id="${t.id}" data-act="open-event">${ddayHTML(t.due_date)}<span class="ktag">${kindOfTask(t)}</span><span class="t">${md(t.due_date)}(${dowOf(t.due_date)}) ${esc(compactTitle(t.title))}</span></li>`).join('');
     $('#upcoming-count').textContent = up.length;
     const done = S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료').sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
     $('#done-count').textContent = done.length;
-    $('#done-list').innerHTML = done.slice(0, 12).map(t => `<li data-act="open-task" data-id="${t.id}"><span class="pill" data-s="완료">완료</span><span class="t">${esc(t.title)}</span></li>`).join('')
+    $('#done-list').innerHTML = done.slice(0, 12).map(t => `<li class="${kindCls(kindOfTask(t))}" data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${esc(t.title)}</span></li>`).join('')
       + (done.length ? `<li class="more" data-act="archive-done">완료 ${done.length}개 모두 보관하기</li>` : '');
   }
   function autosize(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
@@ -477,24 +583,23 @@
     if (document.activeElement !== el) { el.value = S.notes['week:' + weekDays()[0]]?.content || ''; autosize(el); }
   }
   function renderRollover() {
-    const el = $('#rollover'), cur = ymd(S.weekStart) === ymd(mondayOf(new Date()));
-    const n = cur ? pastUndone().length : 0;
+    const el = $('#rollover');
+    const n = isCurrentPeriod() ? pastUndone().length : 0;
     el.hidden = !n;
     if (n) el.innerHTML = `<span>⏪ 지난 미완료 ${n}개</span><button class="btn sm" data-act="rollover">오늘로 가져오기</button>`;
   }
   function planHTML(p) {
     const t = p.task_id ? taskById(p.task_id) : null;
-    const title = t ? t.title : (p.title || '(제목 없음)');
-    const meta = t ? `<div class="item-meta">${t.project ? `<span class="proj" style="--pc:${projColor(t.project)}"><i></i>${esc(t.project)}</span>` : ''}${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}</div>` : '';
-    return `<li class="item plan ${p.done ? 'is-done' : ''}" data-kind="plan" data-id="${p.id}" data-act="open-plan" style="--pc:${projColor(t?.project)}">
+    const meta = t ? `<div class="item-meta">${t.project ? `<span>${esc(t.project)}</span>` : ''}${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}</div>` : '';
+    return `<li class="item plan ${kindCls(kindOfPlan(p))} ${p.done ? 'is-done' : ''}" data-kind="plan" data-id="${p.id}" data-act="open-plan">
       <button class="check" type="button" data-act="toggle-plan" aria-label="체크">${ICON.check}</button>
-      <div class="item-body"><div class="item-title">${esc(title)}${p.goal ? ` <span class="goal">${esc(p.goal)}</span>` : ''}</div>${meta}</div></li>`;
+      <div class="item-body"><div class="item-title">${esc(planTitle(p))}${p.goal ? ` <span class="goal">${esc(p.goal)}</span>` : ''}</div>${meta}</div></li>`;
   }
   function eventHTML(t) {
-    const cal = t.source === 'gcal', done = t.status === '완료';
-    return `<div class="event ${done ? 'is-done' : ''}" data-act="open-event" data-id="${t.id}" style="--pc:${projColor(t.project)}">
+    const cal = t.source === 'gcal', done = t.status === '완료', k = kindOfTask(t);
+    return `<div class="event ${kindCls(k)} ${done ? 'is-done' : ''}" data-act="open-event" data-id="${t.id}">
       <button class="check" type="button" data-act="toggle-event" data-id="${t.id}" aria-label="체크">${ICON.check}</button>
-      <div class="eb"><span class="tag">${cal ? '📅 일정' : '⏰ 마감'}</span>${esc(t.title)}${t.location ? `<small>📍 ${esc(t.location)}</small>` : ''}</div></div>`;
+      <div class="eb"><span class="tag">${cal ? `📅 ${k}` : '⏰ 마감'}</span>${esc(t.title)}${t.location ? `<small>📍 ${esc(t.location)}</small>` : ''}</div></div>`;
   }
   function renderWeek() {
     const days = weekDays(), td = today();
@@ -515,9 +620,35 @@
       $('.quick-add input', art).placeholder = `+ ${DOW[i]}요일에 추가`;
     });
   }
+  function renderMonth() {
+    const days = monthDays(), td = today(), mm = S.month.getMonth();
+    const max = innerWidth >= 720 ? 4 : 3;
+    $$('.mcell').forEach((cell, i) => {
+      const d = days[i];
+      if (!d) { cell.hidden = true; return; }
+      cell.hidden = false;
+      const dt = fromYmd(d), ps = plansOn(d), evs = eventsOn(d), nt = S.notes['day:' + d];
+      cell.dataset.day = d; $('.mdrop', cell).dataset.day = d; $('.mdrop', cell).innerHTML = '';
+      cell.classList.toggle('out', dt.getMonth() !== mm);
+      cell.classList.toggle('today', d === td);
+      cell.classList.toggle('we', i % 7 >= 5);
+      cell.classList.toggle('rest', !!nt?.rest);
+      const dn = ps.filter(p => p.done).length;
+      $('.mnum', cell).textContent = dt.getDate();
+      const c = $('.mcount', cell);
+      c.textContent = ps.length ? `${dn}/${ps.length}` : '';
+      c.classList.toggle('all', ps.length > 0 && dn === ps.length);
+      const items = [
+        ...evs.map(t => ({ k: kindOfTask(t), title: t.source === 'gcal' ? compactTitle(t.title).replace(/^\s*\[[^\]]*\]\s*/, '') : '⏰ ' + t.title, done: t.status === '완료', cal: true })),
+        ...ps.map(p => ({ k: kindOfPlan(p), title: planTitle(p), done: p.done, cal: false })),
+      ];
+      $('.mbody', cell).innerHTML = items.slice(0, max).map(x => `<span class="mi ${kindCls(x.k)} ${x.cal ? 'cal' : ''} ${x.done ? 'done' : ''}">${esc(x.title)}</span>`).join('')
+        + (items.length > max ? `<span class="mmore">+${items.length - max}</span>` : '');
+    });
+  }
 
   function buildSkeleton() {
-    const week = $('#week'), strip = $('#strip');
+    const week = $('#week'), strip = $('#strip'), mgrid = $('#mgrid');
     for (let i = 0; i < 7; i++) {
       week.insertAdjacentHTML('beforeend', `<article class="day card" data-i="${i}">
         <header class="day-head"></header><div class="day-extra"></div><div class="events"></div>
@@ -525,6 +656,9 @@
         <form class="quick-add" data-i="${i}"><input type="text" enterkeyhint="done" list="task-titles" autocomplete="off" aria-label="${DOW[i]}요일에 추가"></form>
       </article>`);
       strip.insertAdjacentHTML('beforeend', `<div class="strip-day" data-act="jump-day" data-i="${i}" role="button" tabindex="0"><span class="d"></span><span class="n"></span><span class="c"></span><ul class="strip-drop" data-strip="1"></ul></div>`);
+    }
+    for (let i = 0; i < 42; i++) {
+      mgrid.insertAdjacentHTML('beforeend', `<div class="mcell" data-act="open-mday" data-i="${i}" role="button" tabindex="0"><div class="mhead"><span class="mnum"></span><span class="mcount"></span></div><div class="mbody"></div><ul class="mdrop" data-strip="1"></ul></div>`);
     }
     document.body.insertAdjacentHTML('beforeend', '<datalist id="task-titles"></datalist>');
   }
@@ -544,7 +678,7 @@
     Sortable.create($('#backlog'), { ...common, group: { name: 'board', pull: true, put: (to, from, el) => el.dataset.kind === 'plan' } });
     Sortable.create($('#upcoming'), { ...common, sort: false, group: { name: 'board', pull: 'clone', put: false } });
     $$('.day-list').forEach(el => Sortable.create(el, { ...common, group: { name: 'board', pull: true, put: true } }));
-    $$('.strip-drop').forEach(el => Sortable.create(el, { ...common, sort: false, draggable: '.never-drag', emptyInsertThreshold: 0, group: { name: 'board', pull: false, put: true } }));
+    $$('.strip-drop, .mdrop').forEach(el => Sortable.create(el, { ...common, sort: false, draggable: '.never-drag', emptyInsertThreshold: 0, group: { name: 'board', pull: false, put: true } }));
   }
   function onDragEnd(evt) {
     S.dragging = false; S.lastDragEnd = Date.now();
@@ -571,7 +705,7 @@
   }
   function toastAssigned(taskId, day) {
     const t = taskById(taskId); if (!t) return;
-    if (!$('#screen-app').hidden && window.matchMedia('(max-width: 1179px)').matches) toast(`${dowOf(day)}요일에 “${short(t.title)}” 배정`);
+    if (S.view === 'month' || window.matchMedia('(max-width: 1179px)').matches) toast(`${md(day)}(${dowOf(day)})에 “${short(t.title)}” 배정`);
   }
 
   // ================= sheets =================
@@ -596,7 +730,7 @@
     afterSheet();
   }
   function afterSheet() {
-    if (S.sheet?.type === 'add') { renderAddPreview(); }
+    if (S.sheet?.type === 'add') { renderAddPreview(); updateFinalTitle(); }
     $$('#sheet-body textarea[data-autosize]').forEach(autosize);
   }
   function closeSheet(fromPop) {
@@ -613,6 +747,7 @@
     const td = today();
     return `<div class="days7">${weekDays().map((d, i) => `<button type="button" data-act="${act}" data-day="${d}" ${extraAttr} class="${isOn(d) ? 'on' : ''} ${d === td ? 'today' : ''}">${DOW[i]}<small>${fromYmd(d).getDate()}</small></button>`).join('')}</div>`;
   };
+  const kindSeg = (cur, act) => `<div class="kseg">${KINDS.map(k => `<button type="button" class="${kindCls(k)} ${cur === k ? 'on' : ''}" data-act="${act}" data-k="${k}"><span class="kdot"></span>${k}</button>`).join('')}</div>`;
   const statusSeg = (cur, tid) => `<div class="seg">${['', ...STATUSES].map(s => `<button type="button" data-act="task-status" data-s="${s}" ${tid ? `data-tid="${tid}"` : ''} class="${(cur || '') === s ? 'on' : ''}">${s || '없음'}</button>`).join('')}</div>`;
   const linkify = s => esc(s).replace(/https?:\/\/[^\s<]+/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
 
@@ -621,8 +756,9 @@
     const days = weekDays();
     const on = new Set(S.plans.filter(p => p.task_id === id && days.includes(p.day)).map(p => p.day));
     return head('', `<input class="sh-title" data-field="title" value="${esc(t.title)}" aria-label="제목" enterkeyhint="done">`)
-      + `<div class="sh-sec"><p class="sh-label">진행 상태</p>${statusSeg(t.status)}</div>
-      <div class="sh-sec"><p class="sh-label">이번 주 요일 배정 <span>· 여러 날 선택 가능</span></p>${days7('task-day', d => on.has(d))}</div>
+      + `<div class="sh-sec"><p class="sh-label">종류</p>${kindSeg(kindOfTask(t), 'set-kind')}</div>
+      <div class="sh-sec"><p class="sh-label">진행 상태</p>${statusSeg(t.status)}</div>
+      <div class="sh-sec"><p class="sh-label">${S.view === 'week' ? '이번 주' : `${md(days[0])} 주`} 요일 배정 <span>· 여러 날 선택 가능</span></p>${days7('task-day', d => on.has(d))}</div>
       <div class="sh-sec"><label class="toggle"><span>오케이 (컨펌 완료)</span><input type="checkbox" data-field="ok" ${t.ok ? 'checked' : ''}></label></div>
       <div class="sh-sec row">
         <label class="field"><span>프로젝트</span><input data-field="project" value="${esc(t.project || '')}" placeholder="예: 교촌"></label>
@@ -639,20 +775,22 @@
     const range = t.end_date && t.end_date !== t.due_date ? `${dayLabel(t.due_date)} – ${dayLabel(t.end_date)}` : dayLabel(t.due_date);
     return head(`📅 ${esc(t.title)}`)
       + `<p class="muted" style="margin:-4px 0 10px">${range}${t.location ? ` · 📍 ${esc(t.location)}` : ''}</p>
+      <div class="sh-sec"><p class="sh-label">종류 <span>· 앱에서만 바뀌어요</span></p>${kindSeg(kindOfTask(t), 'set-kind')}</div>
       <div class="sh-sec"><label class="toggle"><span>완료 체크</span><input type="checkbox" data-field="evdone" ${t.status === '완료' ? 'checked' : ''}></label></div>
-      <div class="sh-sec"><p class="sh-label">이번 주에 준비 일정 잡기</p>${days7('task-day', d => on.has(d), 'data-goal="준비"')}</div>
+      <div class="sh-sec"><p class="sh-label">준비 일정 잡기 (${md(days[0])} 주)</p>${days7('task-day', d => on.has(d), 'data-goal="준비"')}</div>
       ${t.detail ? `<div class="sh-sec"><p class="sh-label">캘린더 내용</p><div class="detail">${linkify(t.detail)}</div></div>` : ''}
-      <div class="sh-sec"><label class="field"><span>메모</span><textarea data-field="memo" data-autosize rows="2" placeholder="준비물, 장비 등">${esc(t.memo || '')}</textarea></label></div>
-      <p class="hint">구글 캘린더에서 가져온 일정이에요. 제목·날짜는 캘린더에서 바꾸면 다음 동기화 때 반영돼요.</p>
-      <div class="sh-actions"><button class="btn" type="button" data-act="task-archive">숨기기</button><button class="btn primary" type="button" data-act="close-sheet">닫기</button></div>`;
+      <div class="sh-sec"><label class="field"><span>메모 (앱에만 저장)</span><textarea data-field="memo" data-autosize rows="2" placeholder="준비물, 장비 등">${esc(t.memo || '')}</textarea></label></div>
+      <p class="hint">구글 캘린더 일정이에요. 여기서 숨겨도 구글 캘린더 원본은 그대로예요.</p>
+      <div class="sh-actions"><button class="btn" type="button" data-act="task-archive">앱에서 숨기기</button><button class="btn primary" type="button" data-act="close-sheet">닫기</button></div>`;
   };
 
   SHEETS.plan = id => {
     const p = planById(id); if (!p) return head('삭제된 항목이에요');
     const t = p.task_id ? taskById(p.task_id) : null;
-    const title = t ? t.title : (p.title || '');
+    const title = planTitle(p);
     return head(esc(title), t ? '' : `<input class="sh-title" data-field="ptitle" value="${esc(title)}" aria-label="제목" enterkeyhint="done">`)
       + `<p class="muted" style="margin:-4px 0 10px">${dayLabel(p.day)}</p>
+      <div class="sh-sec"><p class="sh-label">종류</p>${kindSeg(kindOfPlan(p), 'set-kind')}</div>
       <div class="sh-sec"><label class="toggle"><span>이날 할 일 완료</span><input type="checkbox" data-field="pdone" ${p.done ? 'checked' : ''}></label></div>
       <div class="sh-sec"><label class="field"><span>이날 목표</span><input data-field="goal" value="${esc(p.goal || '')}" placeholder="예: 완료, 1차 편집, 컨펌 받기" enterkeyhint="done"></label>
         <div class="sugg">${GOALS.map(g => `<button type="button" data-act="plan-goal" data-goal="${g}">${g}</button>`).join('')}</div></div>
@@ -666,16 +804,47 @@
 
   SHEETS.day = d => {
     const n = S.notes['day:' + d] || {};
-    return head(dayLabel(d))
+    const evs = eventsOn(d), ps = plansOn(d);
+    const list = S.view === 'month' ? `<div class="sh-sec"><p class="sh-label">할 일 · 일정</p>
+        <div class="sheet-list">${evs.map(eventHTML).join('')}<ul class="plain-list">${ps.map(planHTML).join('')}</ul>${!evs.length && !ps.length ? '<p class="empty">아직 없어요</p>' : ''}</div>
+        <form class="quick-add sheet-qa" data-day="${d}"><input type="text" enterkeyhint="done" list="task-titles" autocomplete="off" placeholder="+ 이날 할 일 추가"></form>
+        <div class="row" style="margin-top:10px"><button class="btn sm" type="button" data-act="add-event-on" data-day="${d}">📅 이날 일정 추가</button><button class="btn sm" type="button" data-act="goto-week" data-day="${d}">이 주 보기</button></div></div>` : '';
+    return head(dayLabel(d)) + list
       + `<div class="sh-sec"><label class="toggle"><span>🌙 휴식일로 표시</span><input type="checkbox" data-field="rest" ${n.rest ? 'checked' : ''}></label></div>
-      <div class="sh-sec"><label class="field"><span>요일 메모</span><textarea data-field="daymemo" data-autosize rows="3" placeholder="예: 오후 미팅, 외근">${esc(n.content || '')}</textarea></label></div>
+      <div class="sh-sec"><label class="field"><span>요일 메모</span><textarea data-field="daymemo" data-autosize rows="2" placeholder="예: 오후 미팅, 외근">${esc(n.content || '')}</textarea></label></div>
+      ${S.view === 'week' ? `<div class="sh-sec"><button class="btn block" type="button" data-act="add-event-on" data-day="${d}">📅 이날 구글 캘린더 일정 추가</button></div>` : ''}
       <div class="sh-actions"><button class="btn primary" type="button" data-act="close-sheet">완료</button></div>`;
   };
 
   SHEETS.add = (_, ctx) => {
+    const mode = ctx.mode || 'task';
+    const tabs = `<div class="tabs"><button type="button" data-act="add-mode" data-v="task" class="${mode === 'task' ? 'on' : ''}">할 일</button><button type="button" data-act="add-mode" data-v="event" class="${mode === 'event' ? 'on' : ''}">📅 구글 캘린더 일정</button></div>`;
+    if (mode === 'event') {
+      const ev = ctx.ev || (ctx.ev = { kind: '촬영', date: today() });
+      const linked = !!String(S.settings.gas_url || '').trim();
+      return head('추가') + tabs
+        + `<div class="sh-sec"><p class="sh-label">종류</p>${kindSeg(ev.kind, 'ev-kind')}</div>
+        <label class="field"><span>제목</span><input data-ef="title" value="${esc(ev.title || '')}" placeholder="예: [교촌] 신메뉴 촬영" enterkeyhint="done"></label>
+        <p class="final-title" id="final-title"></p>
+        <div class="sh-sec row">
+          <label class="field"><span>날짜</span><input type="date" data-ef="date" value="${ev.date || ''}"></label>
+          <label class="field"><span>종료일 (여러 날일 때)</span><input type="date" data-ef="end" value="${ev.end || ''}"></label>
+        </div>
+        <div class="sh-sec row">
+          <label class="field"><span>시작 시간 (선택)</span><input type="time" data-ef="st" value="${ev.st || ''}"></label>
+          <label class="field"><span>종료 시간</span><input type="time" data-ef="et" value="${ev.et || ''}"></label>
+        </div>
+        <label class="field"><span>장소 (선택)</span><input data-ef="loc" value="${esc(ev.loc || '')}" placeholder="예: 일산 킨텍스"></label>
+        <div class="sh-sec"><label class="field"><span>메모 (선택)</span><textarea data-ef="memo" data-autosize rows="2" placeholder="인력, 장비, 노션 링크 등">${esc(ev.memo || '')}</textarea></label></div>
+        <div class="notice ${linked ? '' : 'warn'}">${linked
+          ? '구글 캘린더에 <b>바로 추가</b>돼요. 추가만 가능하고, 앱에서 지워도 구글 캘린더 일정은 <b>절대 지워지지 않아요.</b>'
+          : '아직 바로 추가 연결 전이라, 누르면 <b>구글 캘린더 창</b>이 열려요. 거기서 저장을 눌러주세요. (설정에서 연결하면 바로 추가돼요)'}</div>
+        <div class="sh-actions"><button class="btn" type="button" data-act="close-sheet">취소</button><button class="btn primary" type="button" data-act="cal-submit" id="cal-submit">${linked ? '구글 캘린더에 추가' : '구글 캘린더에서 열기'}</button></div>`;
+    }
     const target = ctx.target || '';
-    return head('할 일 추가')
-      + `<label class="field"><span>한 줄에 하나씩 · <b>프로젝트 제목 (상태) 오케이</b> 형식 인식</span>
+    return head('추가') + tabs
+      + `<div class="sh-sec"><p class="sh-label">기본 종류 <span>· 줄에 (촬영) (개인)을 쓰면 그걸로</span></p>${kindSeg(ctx.kind || '편집', 'add-kind')}</div>
+      <label class="field"><span>한 줄에 하나씩 · <b>프로젝트 제목 (상태) 오케이</b> 형식 인식</span>
         <textarea id="add-text" rows="5" placeholder="교촌 DID (편집) 오케이&#10;촌스러버 통합본 (기획)&#10;소프라노 뮤비">${esc(ctx.text || '')}</textarea></label>
       <ul class="preview" id="add-preview"></ul>
       <div class="sh-sec"><p class="sh-label">어디에 둘까요?</p>
@@ -683,11 +852,25 @@
         ${days7('add-target', d => d === target)}</div>
       <div class="sh-actions"><button class="btn" type="button" data-act="close-sheet">취소</button><button class="btn primary" type="button" data-act="add-submit" id="add-submit">추가</button></div>`;
   };
+  function addItems() {
+    const base = S.sheet?.kind || '편집';
+    return ($('#add-text')?.value || '').split('\n').map(parseLine).filter(Boolean).map(x => ({ ...x, kind: x.kind || base }));
+  }
   function renderAddPreview() {
-    const ta = $('#add-text'); if (!ta) return;
-    const items = ta.value.split('\n').map(parseLine).filter(Boolean);
-    $('#add-preview').innerHTML = items.map(x => `<li style="--pc:${projColor(x.project)}"><b>${esc(x.title)}</b>${x.status ? `<span class="pill" data-s="${esc(x.status)}">${esc(x.status)}</span>` : ''}${x.ok ? '<span class="okb">OK</span>' : ''}<span class="muted" style="font-size:12px">· ${esc(x.project)}</span></li>`).join('');
+    if (!$('#add-text')) return;
+    const items = addItems();
+    $('#add-preview').innerHTML = items.map(x => `<li class="${kindCls(x.kind)}"><span class="ktag">${x.kind}</span><b>${esc(x.title)}</b>${x.status ? `<span class="pill" data-s="${esc(x.status)}">${esc(x.status)}</span>` : ''}${x.ok ? '<span class="okb">OK</span>' : ''}<span class="muted" style="font-size:12px">· ${esc(x.project)}</span></li>`).join('');
     const btn = $('#add-submit'); if (btn) { btn.textContent = items.length ? `${items.length}개 추가` : '추가'; btn.disabled = !items.length; }
+  }
+  function readEv() {
+    const ev = S.sheet?.ev; if (!ev) return null;
+    $$('#sheet-body [data-ef]').forEach(el => { ev[el.dataset.ef] = el.value.trim(); });
+    return ev;
+  }
+  function updateFinalTitle() {
+    const el = $('#final-title'); if (!el) return;
+    const ev = readEv(); const t = ev && calTitle(ev);
+    el.innerHTML = t ? `캘린더 제목: <b>${esc(t)}</b>` : '';
   }
 
   let deferredPrompt = null;
@@ -695,15 +878,21 @@
     const isOwner = S.me?.role === 'owner';
     const synced = S.settings.cal_synced_at ? new Date(S.settings.cal_synced_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '아직 없음';
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !navigator.standalone;
+    const theme = ls.get('weekly-theme', 'dark');
     return head('설정')
       + `<div class="sh-sec"><label class="field"><span>내 이름</span><input data-field="myname" value="${esc(S.me?.display_name || '')}" placeholder="예: 동준"></label>
         <p class="hint">${esc(S.session?.user.email || '')}</p></div>
-      <div class="sh-sec"><p class="sh-label">📅 구글 캘린더 연동</p>
+      <div class="sh-sec"><p class="sh-label">🎨 화면</p><div class="seg">${[['dark', '다크'], ['light', '라이트'], ['auto', '기기 설정']].map(([v, l]) => `<button type="button" data-act="theme" data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="sh-sec"><p class="sh-label">📅 구글 캘린더 → 앱 (가져오기)</p>
         <label class="field"><span>iCal 비공개 주소</span><input type="password" data-field="ics_url" value="${esc(S.settings.ics_url || '')}" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false"></label>
         <label class="field" style="margin-top:8px"><span>가져올 키워드 (쉼표로 여러 개)</span><input data-field="cal_keyword" value="${esc(S.settings.cal_keyword || '동준')}"></label>
         <div class="row" style="margin-top:8px"><button class="btn" type="button" data-act="cal-sync">지금 동기화</button></div>
         <p class="hint">마지막 동기화: ${synced} · 앱을 열 때 3시간마다 자동으로 가져와요.</p>
         <div class="tip">구글 캘린더(PC) → ⚙️ 설정 → 왼쪽 <b>내 캘린더의 설정</b>에서 캘린더 선택 → <b>캘린더 통합</b> → <b>iCal 형식의 비공개 주소</b> 복사해서 위에 붙여넣기</div></div>
+      <div class="sh-sec"><p class="sh-label">📤 앱 → 구글 캘린더 (바로 추가 · 추가 전용)</p>
+        <label class="field"><span>연결 주소 (Apps Script 웹앱 URL)</span><input type="password" data-field="gas_url" value="${esc(S.settings.gas_url || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" spellcheck="false"></label>
+        <div class="row" style="margin-top:8px"><button class="btn" type="button" data-act="gas-test">연결 테스트</button></div>
+        <p class="hint">이 연결은 일정 <b>추가만</b> 할 수 있어요. 수정·삭제 기능은 없어서 실수로 지워질 일이 없어요.</p></div>
       ${isOwner ? `<div class="sh-sec"><p class="sh-label">👥 멤버</p>${S.members.map(m => `<div class="member"><div class="who"><b>${esc(m.display_name || m.email)}</b><small>${esc(m.email || '')} · ${m.role === 'owner' ? '관리자' : m.approved ? '멤버' : '승인 대기'}</small></div>
           ${m.role === 'owner' ? '' : `${m.approved ? `<button class="btn sm" type="button" data-act="member-approve" data-id="${m.user_id}" data-v="0">해제</button>` : `<button class="btn sm primary" type="button" data-act="member-approve" data-id="${m.user_id}" data-v="1">승인</button>`}<button class="btn sm danger" type="button" data-act="member-remove" data-id="${m.user_id}">삭제</button>`}</div>`).join('')}
         <p class="hint">다른 사람이 같은 주소에서 가입하면 여기서 승인해야 보드를 볼 수 있어요.</p></div>` : ''}
@@ -751,35 +940,58 @@
       if (f === 'ics_url' || f === 'cal_keyword') {
         saveSetting(f, v.trim()).then(ok => { if (ok && f === 'ics_url' && v.trim()) syncCalendar(true); });
       }
+      if (f === 'gas_url') {
+        const u = v.trim();
+        if (u && !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec/.test(u)) { toast('https://script.google.com/macros/s/…/exec 형식의 주소를 넣어주세요'); return; }
+        saveSetting('gas_url', u).then(ok => { if (ok && u) A['gas-test'](); });
+      }
     }
   }
 
   // ================= actions =================
   const A = {};
-  A['week-prev'] = () => changeWeek(-1);
-  A['week-next'] = () => changeWeek(1);
-  A['week-today'] = () => changeWeek(0);
-  function changeWeek(dir) {
-    S.weekStart = dir === 0 ? mondayOf(new Date()) : addDays(S.weekStart, dir * 7);
-    S.followToday = ymd(S.weekStart) === ymd(mondayOf(new Date()));
-    S.notes = {};
+  A['nav-prev'] = () => nav(-1);
+  A['nav-next'] = () => nav(1);
+  A['nav-today'] = () => nav(0);
+  function nav(dir) {
+    if (S.view === 'month') S.month = dir === 0 ? firstOfMonth(new Date()) : new Date(S.month.getFullYear(), S.month.getMonth() + dir, 1);
+    else S.weekStart = dir === 0 ? mondayOf(new Date()) : addDays(S.weekStart, dir * 7);
+    S.followToday = isCurrentPeriod();
     render(); loadAll();
     if (dir === 0) window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+  function setView(v, focusDay) {
+    if (v === 'month') {
+      const base = focusDay ? fromYmd(focusDay) : (S.followToday ? new Date() : S.weekStart);
+      S.month = firstOfMonth(base);
+    } else {
+      const now = new Date();
+      const base = focusDay ? fromYmd(focusDay) : (ymd(S.month) === ymd(firstOfMonth(now)) ? now : S.month);
+      S.weekStart = mondayOf(base);
+    }
+    S.view = v; ls.set('weekly-view', v);
+    S.followToday = isCurrentPeriod();
+    render(); loadAll();
+  }
+  A.view = a => { if (a.dataset.v !== S.view) setView(a.dataset.v); };
   A['jump-day'] = a => {
     const art = $$('.day')[+a.dataset.i];
     if (art) art.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
-  A['toggle-tray'] = () => { ls.set('weekly-tray-collapsed', !ls.get('weekly-tray-collapsed', false)); renderTray(); };
-  A.filter = a => { S.filter = a.dataset.v; renderTray(); };
-  A['open-task'] = (a, id) => {
-    const t = taskById(id); if (!t) return;
-    openSheet(t.source === 'gcal' ? 'event' : 'task', id);
+  A['open-mday'] = a => openSheet('day', a.dataset.day);
+  A['goto-week'] = a => {
+    const d = a.dataset.day; closeSheet(); setView('week', d);
+    setTimeout(() => { const art = $$('.day')[(fromYmd(d).getDay() + 6) % 7]; if (art) art.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 350);
   };
+  A['toggle-tray'] = () => { ls.set('weekly-tray-collapsed', !ls.get('weekly-tray-collapsed', false)); renderTray(); };
+  A.filter = a => { S.filter = S.filter === a.dataset.v ? 'all' : a.dataset.v; renderTray(); };
+  A.kfilter = a => { const v = a.dataset.v; if (v === 'all') { S.kindFilter = 'all'; S.filter = 'all'; } else S.kindFilter = S.kindFilter === v ? 'all' : v; renderTray(); };
+  A['open-task'] = (a, id) => { const t = taskById(id); if (t) openSheet(t.source === 'gcal' ? 'event' : 'task', id); };
   A['open-event'] = (a, id) => { const t = taskById(id); if (t) openSheet(t.source === 'gcal' ? 'event' : 'task', id); };
   A['open-plan'] = (a, id) => openSheet('plan', id);
   A['open-day'] = a => openSheet('day', a.dataset.day);
-  A['open-add'] = () => openSheet('add', null, { target: '' });
+  A['open-add'] = () => openSheet('add', null, { mode: 'task', target: '', kind: '편집' });
+  A['add-event-on'] = a => openSheet('add', null, { mode: 'event', ev: { kind: '촬영', date: a.dataset.day } });
   A['open-settings'] = () => openSheet('settings');
   A['close-sheet'] = () => closeSheet();
   A['toggle-plan'] = (a, id) => { const p = planById(id); if (p) togglePlan(p); };
@@ -788,6 +1000,7 @@
     const done = t.status !== '완료';
     if (done) { S.prevStatus[t.id] = t.status; haptic(15); }
     updateTask(t, { status: done ? '완료' : (S.prevStatus[t.id] ?? null) });
+    if (S.sheet?.type === 'day') refreshSheet();
   };
   A.rollover = () => {
     const td = today(), items = pastUndone().sort((a, b) => a.day.localeCompare(b.day) || a.sort - b.sort);
@@ -795,6 +1008,16 @@
     items.forEach(p => { ops = ops.concat(movePlan(p.id, td, Infinity)); });
     render(); persist(ops);
     toast(`${items.length}개를 오늘로 옮겼어요`);
+  };
+  A['set-kind'] = a => {
+    const sh = S.sheet, k = a.dataset.k; if (!sh) return;
+    if (sh.type === 'task' || sh.type === 'event') { const t = taskById(sh.id); if (t) updateTask(t, { kind: k }); }
+    if (sh.type === 'plan') {
+      const p = planById(sh.id); if (!p) return;
+      const t = p.task_id && taskById(p.task_id);
+      if (t) updateTask(t, { kind: k }); else updatePlan(p, { kind: k });
+    }
+    refreshSheet();
   };
   A['task-status'] = a => {
     const t = taskById(a.dataset.tid || S.sheet?.id); if (!t) return;
@@ -811,10 +1034,10 @@
   A['task-archive'] = () => {
     const t = taskById(S.sheet?.id); if (!t) return;
     closeSheet(); updateTask(t, { archived: true });
-    toast('보관했어요', '되돌리기', () => { t.archived = false; S.tasks.push(t); updateTask(t, { archived: false }); });
+    toast(t.source === 'gcal' ? '앱에서 숨겼어요 (구글 캘린더는 그대로)' : '보관했어요', '되돌리기', () => { t.archived = false; S.tasks.push(t); updateTask(t, { archived: false }); });
   };
   A['task-delete'] = () => {
-    const t = taskById(S.sheet?.id); if (!t) return;
+    const t = taskById(S.sheet?.id); if (!t || t.source === 'gcal') return;
     if (!confirm(`“${t.title}” 작업을 삭제할까요?\n요일 배정도 함께 지워져요.`)) return;
     S.tasks = S.tasks.filter(x => x !== t); S.plans = S.plans.filter(p => p.task_id !== t.id);
     closeSheet(); render(); persist([{ op: 'delete', table: 'tasks', id: t.id }]);
@@ -830,7 +1053,7 @@
   A['plan-move'] = a => { const p = planById(S.sheet?.id); if (!p || p.day === a.dataset.day) return; const ops = movePlan(p.id, a.dataset.day); render(); refreshSheet(); persist(ops); toast(`${dowOf(a.dataset.day)}요일로 옮겼어요`); };
   A['plan-copy'] = a => {
     const p = planById(S.sheet?.id); if (!p) return;
-    const ops = p.task_id ? assignTask(p.task_id, a.dataset.day, Infinity, p.goal) : addFreePlan(p.title, a.dataset.day);
+    const ops = p.task_id ? assignTask(p.task_id, a.dataset.day, Infinity, p.goal) : addFreePlan(p.title, a.dataset.day, p.kind);
     render(); refreshSheet(); persist(ops); toast(`${dowOf(a.dataset.day)}요일에도 추가했어요`);
   };
   A['plan-remove'] = () => {
@@ -846,9 +1069,12 @@
     toast('할 일 목록으로 보냈어요');
   };
   A['plan-open-task'] = () => { const p = planById(S.sheet?.id); if (p?.task_id) openSheet('task', p.task_id); };
+  A['add-mode'] = a => { if (!S.sheet) return; if (S.sheet.mode === 'event') readEv(); else S.sheet.text = $('#add-text')?.value || ''; S.sheet.mode = a.dataset.v; refreshSheet(); };
+  A['add-kind'] = a => { if (!S.sheet) return; S.sheet.kind = a.dataset.k; S.sheet.text = $('#add-text')?.value || ''; refreshSheet(); };
+  A['ev-kind'] = a => { if (!S.sheet?.ev) return; readEv(); S.sheet.ev.kind = a.dataset.k; refreshSheet(); };
   A['add-target'] = a => { if (!S.sheet) return; S.sheet.target = a.dataset.day || ''; S.sheet.text = $('#add-text')?.value || ''; refreshSheet(); };
   A['add-submit'] = () => {
-    const items = ($('#add-text')?.value || '').split('\n').map(parseLine).filter(Boolean);
+    const items = addItems();
     if (!items.length) return;
     const target = S.sheet?.target || '';
     const tasks = items.map(x => { const t = newTask(x); S.tasks.push(t); return t; });
@@ -858,6 +1084,24 @@
     persistSeq(tasks.map(t => ({ op: 'insert', table: 'tasks', row: taskRow(t) })), planOps);
     toast(target ? `${tasks.length}개를 ${dowOf(target)}요일에 추가했어요` : `${tasks.length}개를 할 일에 추가했어요`);
   };
+  A['cal-submit'] = async a => {
+    const ev = readEv(); if (!ev) return;
+    if (!ev.title) { toast('제목을 입력해주세요'); $('[data-ef="title"]')?.focus(); return; }
+    if (!ev.date) { toast('날짜를 골라주세요'); return; }
+    if (ev.end && ev.end < ev.date) { toast('종료일이 시작일보다 빨라요'); return; }
+    a.disabled = true; a.textContent = '추가하는 중…';
+    try { if (await addCalendarEvent({ ...ev })) closeSheet(); }
+    catch (e) { toast('캘린더 추가 실패: ' + (e.message || e)); a.disabled = false; a.textContent = '다시 시도'; }
+  };
+  A['gas-test'] = async () => {
+    const u = String(S.settings.gas_url || '').trim();
+    if (!u) { toast('연결 주소를 먼저 넣어주세요'); return; }
+    try {
+      const r = await fetch(u); const d = await r.json();
+      toast(d.ok && d.app === 'weekly-todo' ? '✅ 구글 캘린더 연결 OK (추가 전용)' : '연결은 됐지만 위클리용 스크립트가 아니에요');
+    } catch (e) { toast('연결 실패: 주소와 배포 권한(모든 사용자)을 확인해주세요'); }
+  };
+  A.theme = a => { const v = a.dataset.v; ls.set('weekly-theme', v); applyTheme(v); refreshSheet(); };
   A['cal-sync'] = () => syncCalendar(true);
   A['member-approve'] = a => {
     const m = S.members.find(x => x.user_id === a.dataset.id); if (!m) return;
@@ -885,28 +1129,28 @@
     document.addEventListener('click', e => {
       const a = e.target.closest('[data-act]'); if (!a) return;
       const act = a.dataset.act;
-      if (/^open-(task|event|plan)$|^toggle-(plan|event)$/.test(act) && Date.now() - S.lastDragEnd < 350) return;
+      if (/^open-(task|event|plan|mday)$|^toggle-(plan|event)$/.test(act) && Date.now() - S.lastDragEnd < 350) return;
       const fn = A[act]; if (!fn) return;
       const id = a.dataset.id || a.closest('[data-id]')?.dataset.id;
       fn(a, id, e);
     });
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape' && S.sheet) { closeSheet(); return; }
-      const strip = e.target.closest?.('.strip-day');
-      if (strip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); A['jump-day'](strip); return; }
+      const cell = e.target.closest?.('.strip-day, .mcell');
+      if (cell && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); A[cell.dataset.act](cell); return; }
       if (S.sheet || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $('#screen-app').hidden || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === 'ArrowLeft') changeWeek(-1);
-      else if (e.key === 'ArrowRight') changeWeek(1);
-      else if (e.key === 't') changeWeek(0);
+      if (e.key === 'ArrowLeft') nav(-1);
+      else if (e.key === 'ArrowRight') nav(1);
+      else if (e.key === 't') nav(0);
+      else if (e.key === 'w') setView('week');
+      else if (e.key === 'm') setView('month');
       else if (e.key === 'n') { e.preventDefault(); A['open-add'](); }
     });
     $('#week').addEventListener('submit', e => {
       e.preventDefault();
       const form = e.target.closest('.quick-add'); if (!form) return;
       const input = $('input', form), text = input.value.trim(); if (!text) return;
-      const day = weekDays()[+form.dataset.i];
-      const t = S.tasks.find(x => x.source !== 'gcal' && x.status !== '완료' && x.title === text);
-      const ops = t ? assignTask(t.id, day) : addFreePlan(text, day);
+      const ops = quickAdd(text, weekDays()[+form.dataset.i]);
       input.value = ''; render(); persist(ops);
     });
     const wn = $('#week-note');
@@ -916,33 +1160,45 @@
       saveNote({ ...note(key), content: wn.value.trim() || null });
     });
     const body = $('#sheet-body');
+    body.addEventListener('submit', e => {
+      e.preventDefault();
+      const form = e.target.closest('.sheet-qa'); if (!form) return;
+      const input = $('input', form), text = input.value.trim(); if (!text) return;
+      const ops = quickAdd(text, form.dataset.day);
+      input.value = ''; render(); refreshSheet(); persist(ops);
+      setTimeout(() => $('#sheet-body .sheet-qa input')?.focus(), 30);
+    });
     body.addEventListener('change', e => {
       const f = e.target.dataset.field; if (!f) return;
       onField(f, e.target.type === 'checkbox' ? e.target.checked : e.target.value, e.target);
     });
     body.addEventListener('input', e => {
       if (e.target.id === 'add-text') renderAddPreview();
+      if (e.target.dataset.ef) updateFinalTitle();
       if (e.target.matches('textarea[data-autosize]')) autosize(e.target);
     });
     body.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && e.target.matches('input.sh-title, input[data-field="goal"]')) { e.preventDefault(); e.target.blur(); }
+      if (e.key === 'Enter' && e.target.matches('input.sh-title, input[data-field="goal"], input[data-ef]')) { e.preventDefault(); e.target.blur(); }
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.id === 'add-text') { e.preventDefault(); A['add-submit'](); }
     });
     window.addEventListener('popstate', () => { if (S.sheet) closeSheet(true); });
     window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; });
+    let resizeT;
+    window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { setTopH(); if (S.view === 'month' && !S.dragging) renderMonth(); }, 150); });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible' || !S.me) return;
-      // 자정/새 주가 지났으면 '이번 주'를 보고 있던 경우 자동으로 따라감
-      if (S.followToday && ymd(S.weekStart) !== ymd(mondayOf(new Date()))) { changeWeek(0); return; }
+      if (S.followToday && !isCurrentPeriod()) { nav(0); return; }
       render(); scheduleReload();
     });
     const setTopH = () => document.documentElement.style.setProperty('--top-h', ($('.topbar')?.offsetHeight || 132) + 'px');
-    window.addEventListener('resize', setTopH); setTimeout(setTopH, 50);
+    setTimeout(setTopH, 50);
+    applyTheme(ls.get('weekly-theme', 'dark'));
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
   function boot() {
     initStatic();
+    S.followToday = true;
     if (!sb) { show('config'); return; }
     initAuth();
     sb.auth.onAuthStateChange((event, session) => {

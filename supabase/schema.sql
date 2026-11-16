@@ -62,6 +62,7 @@ create table if not exists public.tasks (
   location   text,
   detail     text,                       -- 캘린더 설명
   source     text not null default 'manual',  -- manual | gcal
+  kind       text,                       -- 촬영 | 편집 | 개인
   ext_id     text unique,                -- gcal:<UID>
   sort       double precision not null default 0,
   archived   boolean not null default false,
@@ -75,11 +76,15 @@ create table if not exists public.plans (
   task_id    uuid references public.tasks on delete cascade,
   title      text,                       -- 작업과 연결되지 않은 자유 항목
   goal       text,                       -- 그날 목표 (완료, 완성, 기획…)
+  kind       text,                       -- 자유 항목의 종류 (촬영 | 편집 | 개인)
   day        date not null,
   done       boolean not null default false,
   sort       double precision not null default 0,
   created_at timestamptz not null default now()
 );
+-- 기존 설치 업그레이드용
+alter table public.tasks add column if not exists kind text;
+alter table public.plans add column if not exists kind text;
 create index if not exists plans_day_idx on public.plans (day);
 create index if not exists plans_task_idx on public.plans (task_id);
 

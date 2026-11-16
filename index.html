@@ -1,22 +1,25 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>위클리 · 주간 할 일</title>
   <meta name="description" content="할 일을 요일로 끌어다 놓는 주간 TO-DO 보드">
-  <meta name="theme-color" content="#7c5cff" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#16131f" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#0e0d13">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="위클리">
+  <script>
+    // 테마를 그리기 전에 적용 (기본: 다크)
+    try { var t = JSON.parse(localStorage.getItem('weekly-theme') || '"dark"'); if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+  </script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-  <link rel="stylesheet" href="css/app.css?v=2">
+  <link rel="stylesheet" href="css/app.css?v=3">
 </head>
 <body>
   <!-- 로딩 -->
@@ -66,24 +69,28 @@
   <div id="screen-app" class="screen" hidden>
     <header class="topbar">
       <div class="topbar-row">
-        <button class="icon-btn" data-act="week-prev" aria-label="지난 주">
+        <button class="icon-btn" data-act="nav-prev" aria-label="이전">
           <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
         </button>
-        <button class="week-title" data-act="week-today" aria-label="이번 주로">
+        <button class="week-title" data-act="nav-today" aria-label="오늘로">
           <strong id="week-range"></strong>
           <span id="week-rel" class="week-rel"></span>
         </button>
-        <button class="icon-btn" data-act="week-next" aria-label="다음 주">
+        <button class="icon-btn" data-act="nav-next" aria-label="다음">
           <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <span class="spacer"></span>
+        <div class="view-seg" role="tablist" aria-label="보기">
+          <button data-act="view" data-v="week" role="tab">주</button>
+          <button data-act="view" data-v="month" role="tab">월</button>
+        </div>
         <span id="sync-dot" class="sync-dot" title="동기화 상태"></span>
         <button class="icon-btn" data-act="open-settings" aria-label="설정">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
         </button>
       </div>
       <div class="progress" aria-hidden="true"><i id="progress-bar"></i></div>
-      <!-- 요일 스트립 (여기에 끌어다 놓아도 배정됨) -->
+      <!-- 요일 스트립 (주간 보기 · 여기에 끌어다 놓아도 배정됨) -->
       <nav id="strip" class="strip" aria-label="요일 바로가기"></nav>
     </header>
 
@@ -93,6 +100,9 @@
         <div class="tray-head">
           <h2>할 일 <span id="backlog-count" class="count"></span></h2>
           <span class="spacer"></span>
+          <button class="add-btn" data-act="open-add" aria-label="할 일 · 일정 추가">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>추가
+          </button>
           <button class="chip-btn" data-act="toggle-tray" id="btn-tray" aria-expanded="true">접기</button>
         </div>
         <div id="filters" class="filters"></div>
@@ -111,21 +121,25 @@
       </section>
 
       <!-- 주간 메모 -->
-      <section class="week-note card">
+      <section class="week-note card week-only">
         <textarea id="week-note" rows="1" placeholder="이번 주 메모 (예: 월–금 편집타임)"></textarea>
       </section>
 
       <!-- 롤오버 배너 -->
-      <div id="rollover" class="rollover" hidden></div>
+      <div id="rollover" class="rollover week-only" hidden></div>
 
-      <!-- 요일 -->
-      <section id="week" class="week"></section>
+      <!-- 주간 -->
+      <section id="week" class="week week-only"></section>
+
+      <!-- 월간 -->
+      <section id="month" class="month card month-only">
+        <div class="mgrid-head"><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span class="we">토</span><span class="we">일</span></div>
+        <div id="mgrid" class="mgrid"></div>
+        <p class="hint month-hint">할 일을 날짜 칸으로 끌어다 놓으면 배정돼요. 날짜를 누르면 그날 목록이 열려요.</p>
+      </section>
+
       <p class="foot muted">위클리 · 실시간 동기화</p>
     </main>
-
-    <button class="fab" data-act="open-add" aria-label="할 일 추가">
-      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-    </button>
   </div>
 
   <!-- 바텀시트 -->
@@ -141,7 +155,7 @@
 
   <script src="vendor/supabase.js"></script>
   <script src="vendor/Sortable.min.js"></script>
-  <script src="js/config.js?v=2"></script>
-  <script src="js/app.js?v=2"></script>
+  <script src="js/config.js?v=3"></script>
+  <script src="js/app.js?v=3"></script>
 </body>
 </html>
