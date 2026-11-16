@@ -174,3 +174,7 @@ end $$;
 revoke all on function public.fetch_ics() from public, anon;
 grant execute on function public.fetch_ics() to authenticated;
 grant execute on function public.set_my_name(text) to authenticated;
+
+-- ---------- 권한 (Data API 노출 설정과 무관하게 동작하도록 명시) ----------
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on public.members, public.tasks, public.plans, public.notes, public.settings to authenticated;
