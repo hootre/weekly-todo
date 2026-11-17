@@ -8,9 +8,10 @@
  *
  * 배포: 배포 > 새 배포 > 유형: 웹 앱 / 실행 사용자: 나 / 액세스 권한: 모든 사용자
  * 배포 후 나오는 웹 앱 URL(…/exec)과 아래 TOKEN 값을 위클리 설정에 넣으세요.
- * 일정은 이 스크립트를 배포한 계정의 기본 캘린더에서 읽고, 거기에 추가합니다.
+ * 일정은 CALENDAR_ID 캘린더(비우면 배포한 계정의 기본 캘린더)에서 읽고, 거기에 추가합니다.
  */
 var TOKEN = '__WEEKLY_TOKEN__';   // 위클리 설정의 "연결 비밀키"와 같은 값 (아무도 모르게 길게)
+var CALENDAR_ID = '';             // 공유받은 팀 캘린더를 쓰려면 그 캘린더 ID (구글 캘린더 설정 > 캘린더 통합 > 캘린더 ID)
 var TZ = 'Asia/Seoul';
 var MAX_DAYS = 400;               // 한 번에 읽을 수 있는 최대 기간
 
@@ -24,7 +25,8 @@ function doPost(e) {
     var d = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     if (!TOKEN || TOKEN.indexOf('__') === 0) throw new Error('스크립트의 TOKEN 값을 먼저 정해주세요');
     if (String(d.token || '') !== TOKEN) throw new Error('연결 비밀키가 맞지 않아요');
-    var cal = CalendarApp.getDefaultCalendar();
+    var cal = CALENDAR_ID ? CalendarApp.getCalendarById(CALENDAR_ID) : CalendarApp.getDefaultCalendar();
+    if (!cal) throw new Error('캘린더에 접근할 수 없어요 (CALENDAR_ID와 공유 권한을 확인해주세요)');
     if (d.action === 'ping') return json_({ ok: true, app: 'weekly-todo', calendar: cal.getName() });
     if (d.action === 'list') return json_(list_(cal, d));
     if (d.action === 'add') return json_(add_(cal, d));
