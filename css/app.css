@@ -400,3 +400,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
   .mi { font-size: 10px; line-height: 14px; padding: 0 2px 0 3px; letter-spacing: -0.04em; border-radius: 3px; }
   .mnum { font-size: 12px; }
 }
+
+/* 구글 캘린더 색 점 */
+.gdot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--gc, #7986cb); vertical-align: -1px; margin: 0 3px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--gc, #7986cb) 30%, transparent); }

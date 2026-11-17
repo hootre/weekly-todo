@@ -21,7 +21,11 @@
   const GOALS = ['완료', '완성', '기획', '수정', '컨펌', '업로드', '준비'];
   const KINDS = ['촬영', '편집', '개인'];
   const KIND_CLASS = { 촬영: 'k-shoot', 편집: 'k-edit', 개인: 'k-personal' };
-  const KIND_GCOLOR = { 촬영: 'RED', 편집: 'BLUE', 개인: 'GREEN' };
+  // 구글 캘린더 일정 색 (colorId · 이름 · 색)
+  const GCOLORS = [['1', '라벤더', '#7986cb'], ['2', '세이지', '#33b679'], ['3', '포도', '#8e24aa'], ['4', '플라밍고', '#e67c73'],
+    ['5', '바나나', '#f6bf26'], ['6', '귤', '#f4511e'], ['7', '공작', '#039be5'], ['8', '흑연', '#616161'],
+    ['9', '블루베리', '#3f51b5'], ['10', '바질', '#0b8043'], ['11', '토마토', '#d50000']];
+  const gcolor = id => GCOLORS.find(c => c[0] === id) || null;
   const kindCls = k => KIND_CLASS[k] || 'k-none';
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
     : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
@@ -39,7 +43,7 @@
   // ---- 일정 종류 추론 (촬영 / 편집 / 개인) ----
   const PERSONAL_RE = /휴가|개인|예비군|병원|약속|생일|휴무|연차|반차|가족|여행/;
   const SHOOT_RE = /촬영|스케치|인터뷰|공연|행사|현장|로케|녹화|중계|답사/;
-  const EDIT_RE = /편집|수정|컨펌|렌더|자막|색보정|믹싱|모션|마감|완성|납품/;
+  const EDIT_RE = /편집|수정|컨펌|렌더|자막|색보정|믹싱|모션|마감|완성|납품|마무리|릴리즈|업로드|전달|피드백/;
   function inferKind(title, source, status) {
     const t = String(title || '');
     if (PERSONAL_RE.test(t)) return '개인';
@@ -82,6 +86,10 @@
   const kindOfPlan = p => { const t = p.task_id && taskById(p.task_id); return t ? kindOfTask(t) : (p.kind || inferKind(p.title, 'manual')); };
   const planTitle = p => { const t = p.task_id && taskById(p.task_id); return t ? t.title : (p.title || '(제목 없음)'); };
   const keywords = () => (S.settings.cal_keyword || '동준').split(',').map(x => x.trim()).filter(Boolean);
+  // 내 일정 색: 설정 안 했으면 1번(라벤더 · 보라미디어 캘린더의 '동준' 색), ''이면 색으로는 안 가져옴
+  const myColor = () => { const v = S.settings.cal_color; return v == null ? '1' : (gcolor(String(v)) ? String(v) : ''); };
+  const gasUrl = () => String(S.settings.gas_url || '').trim();
+  const gasLinked = () => !!(gasUrl() && String(S.settings.gas_token || '').trim());
   const compactTitle = s => String(s).replace(/_[^_]*$/, m => (keywords().some(k => m.includes(k)) ? '' : m)).trim();
   const isCurrentPeriod = () => (S.view === 'month'
     ? ymd(S.month) === ymd(firstOfMonth(new Date()))
@@ -409,23 +417,44 @@
       location: c.LOCATION ? icsText(c.LOCATION.val) : '', status: (c.STATUS?.val || '').toUpperCase(), start: s?.date || null, end,
     };
   }
+  // 구글 연결 스크립트 호출 (읽기 · 추가만 있음)
+  async function gasCall(payload) {
+    const url = gasUrl(); if (!url) throw new Error('연결 주소가 없어요');
+    let res;
+    try { res = await fetch(url, { method: 'POST', body: JSON.stringify({ ...payload, token: String(S.settings.gas_token || '').trim() }) }); }
+    catch (_) { throw new Error('연결할 수 없어요 (주소와 배포 권한 "모든 사용자"를 확인해주세요)'); }
+    const data = await res.json().catch(() => null);
+    if (!data) throw new Error('응답을 읽을 수 없어요 (연결 주소를 확인해주세요)');
+    if (!data.ok) throw new Error(data.error || '요청 실패');
+    return data;
+  }
+  // 내 일정 가져오기: 연결 스크립트(색 + 키워드) 우선, 없으면 iCal(키워드만)
+  async function fetchCalendarRows(from, to) {
+    const kws = keywords();
+    if (gasLinked()) {
+      const d = await gasCall({ action: 'list', from, to, color: myColor(), keywords: kws });
+      return (d.events || []).filter(e => e.title && e.start).map(e => ({
+        ext_id: 'gcal:' + e.id + (e.recurring ? '#' + e.start : ''), title: String(e.title).trim(),
+        start: e.start, end: e.end && e.end >= e.start ? e.end : e.start, location: e.location, description: e.description }));
+    }
+    const { data, error } = await sb.rpc('fetch_ics');
+    if (error) throw error;
+    return parseICS(data)
+      .filter(e => e.summary && e.start && e.status !== 'CANCELLED' && e.start >= from && e.start <= to && kws.some(k => e.summary.includes(k)))
+      .map(e => ({ ext_id: 'gcal:' + e.uid + (e.rid ? '#' + e.rid : ''), title: e.summary.trim(), start: e.start, end: e.end,
+        location: e.location, description: e.description }));
+  }
   async function syncCalendar(manual) {
     if (S.syncing) return;
-    if (!S.settings.ics_url) { if (manual) toast('설정에서 구글 캘린더 iCal 주소를 먼저 넣어주세요'); return; }
+    if (!gasLinked() && !S.settings.ics_url) { if (manual) toast('설정에서 구글 캘린더 연결을 먼저 해주세요'); return; }
     S.syncing = true; setSync('busy');
     if (manual) toast('구글 캘린더에서 가져오는 중…');
     try {
-      const { data, error } = await sb.rpc('fetch_ics');
-      if (error) throw error;
-      const kws = keywords();
       const from = ymd(addDays(new Date(), -14)), to = ymd(addDays(new Date(), 180));
       const seen = new Map();
-      parseICS(data).forEach(e => {
-        if (!e.summary || !e.start || e.status === 'CANCELLED' || e.start < from || e.start > to) return;
-        if (!kws.some(k => e.summary.includes(k))) return;
-        const ext = 'gcal:' + e.uid + (e.rid ? '#' + e.rid : '');
-        seen.set(ext, { ext_id: ext, title: e.summary.trim(), project: bracketProject(e.summary), due_date: e.start, end_date: e.end,
-          location: e.location || null, detail: e.description ? e.description.slice(0, 4000) : null, source: 'gcal' });
+      (await fetchCalendarRows(from, to)).forEach(e => {
+        seen.set(e.ext_id, { ext_id: e.ext_id, title: e.title, project: bracketProject(e.title), due_date: e.start, end_date: e.end || e.start,
+          location: e.location || null, detail: e.description ? String(e.description).slice(0, 4000) : null, source: 'gcal' });
       });
       const known = new Set(S.tasks.map(t => t.ext_id).filter(Boolean));
       const rows = [...seen.values()];
@@ -438,7 +467,7 @@
       const gone = S.tasks.filter(t => t.source === 'gcal' && t.due_date >= from && t.due_date <= to && !seen.has(t.ext_id)).map(t => t.id);
       if (gone.length) await sb.from('tasks').update({ archived: true }).in('id', gone);
       await saveSetting('cal_synced_at', new Date().toISOString());
-      if (manual) toast(`캘린더 일정 ${rows.length}개를 동기화했어요`);
+      if (manual) toast(`캘린더 일정 ${rows.length}개를 동기화했어요` + (fresh.length ? ` · 새로 ${fresh.length}개` : ''));
       await loadAll();
       refreshSheet();
     } catch (e) {
@@ -446,7 +475,7 @@
     } finally { S.syncing = false; }
   }
   function maybeAutoSync() {
-    if (!S.settings.ics_url) return;
+    if (!gasLinked() && !S.settings.ics_url) return;
     const last = Date.parse(S.settings.cal_synced_at || 0) || 0;
     if (Date.now() - last > 3 * 3600e3) syncCalendar(false);
   }
@@ -472,17 +501,14 @@
   }
   async function addCalendarEvent(ev) {
     const title = calTitle(ev);
-    const url = String(S.settings.gas_url || '').trim();
-    if (!url) {
+    if (!gasLinked()) {
       window.open(gcalTemplateUrl(ev, title), '_blank', 'noopener');
       toast('구글 캘린더 창에서 저장을 눌러주세요 · 설정에서 연결하면 바로 추가돼요');
       return true;
     }
-    const payload = { action: 'add', title, start: ev.date, end: ev.end && ev.end > ev.date ? ev.end : null,
-      startTime: ev.st || null, endTime: ev.st ? (ev.et || plus2h(ev.st)) : null, location: ev.loc || '', description: ev.memo || '', color: KIND_GCOLOR[ev.kind] || null };
-    const res = await fetch(url, { method: 'POST', body: JSON.stringify(payload) });
-    const data = await res.json().catch(() => ({ ok: false, error: '응답을 읽을 수 없어요 (연결 주소를 확인해주세요)' }));
-    if (!data.ok) throw new Error(data.error || '추가 실패');
+    // 구글 캘린더에는 '내 일정 색'으로 칠해요 (팀 캘린더 색 규칙 유지). 촬영/편집/개인 색은 앱 안에서만.
+    const data = await gasCall({ action: 'add', title, start: ev.date, end: ev.end && ev.end > ev.date ? ev.end : null,
+      startTime: ev.st || null, endTime: ev.st ? (ev.et || plus2h(ev.st)) : null, location: ev.loc || '', description: ev.memo || '', color: myColor() || null });
     const row = { ext_id: 'gcal:' + data.id, title, project: bracketProject(title), kind: ev.kind, due_date: ev.date,
       end_date: ev.end && ev.end > ev.date ? ev.end : ev.date, location: ev.loc || null, detail: ev.memo || null, source: 'gcal' };
     const r = await sb.from('tasks').upsert(row, { onConflict: 'ext_id' });
@@ -821,7 +847,7 @@
     const tabs = `<div class="tabs"><button type="button" data-act="add-mode" data-v="task" class="${mode === 'task' ? 'on' : ''}">할 일</button><button type="button" data-act="add-mode" data-v="event" class="${mode === 'event' ? 'on' : ''}">📅 구글 캘린더 일정</button></div>`;
     if (mode === 'event') {
       const ev = ctx.ev || (ctx.ev = { kind: '촬영', date: today() });
-      const linked = !!String(S.settings.gas_url || '').trim();
+      const linked = gasLinked(), gc = gcolor(myColor());
       return head('추가') + tabs
         + `<div class="sh-sec"><p class="sh-label">종류</p>${kindSeg(ev.kind, 'ev-kind')}</div>
         <label class="field"><span>제목</span><input data-ef="title" value="${esc(ev.title || '')}" placeholder="예: [교촌] 신메뉴 촬영" enterkeyhint="done"></label>
@@ -837,7 +863,7 @@
         <label class="field"><span>장소 (선택)</span><input data-ef="loc" value="${esc(ev.loc || '')}" placeholder="예: 일산 킨텍스"></label>
         <div class="sh-sec"><label class="field"><span>메모 (선택)</span><textarea data-ef="memo" data-autosize rows="2" placeholder="인력, 장비, 노션 링크 등">${esc(ev.memo || '')}</textarea></label></div>
         <div class="notice ${linked ? '' : 'warn'}">${linked
-          ? '구글 캘린더에 <b>바로 추가</b>돼요. 추가만 가능하고, 앱에서 지워도 구글 캘린더 일정은 <b>절대 지워지지 않아요.</b>'
+          ? `구글 캘린더에 <b>바로 추가</b>돼요${gc ? ` (<span class="gdot" style="--gc:${gc[2]}"></span>${gc[1]} 색)` : ''}. 추가만 가능하고, 앱에서 지워도 구글 캘린더 일정은 <b>절대 지워지지 않아요.</b>`
           : '아직 바로 추가 연결 전이라, 누르면 <b>구글 캘린더 창</b>이 열려요. 거기서 저장을 눌러주세요. (설정에서 연결하면 바로 추가돼요)'}</div>
         <div class="sh-actions"><button class="btn" type="button" data-act="close-sheet">취소</button><button class="btn primary" type="button" data-act="cal-submit" id="cal-submit">${linked ? '구글 캘린더에 추가' : '구글 캘린더에서 열기'}</button></div>`;
     }
@@ -879,20 +905,24 @@
     const synced = S.settings.cal_synced_at ? new Date(S.settings.cal_synced_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '아직 없음';
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !navigator.standalone;
     const theme = ls.get('weekly-theme', 'dark');
+    const mc = myColor(), gc = gcolor(mc);
     return head('설정')
       + `<div class="sh-sec"><label class="field"><span>내 이름</span><input data-field="myname" value="${esc(S.me?.display_name || '')}" placeholder="예: 동준"></label>
         <p class="hint">${esc(S.session?.user.email || '')}</p></div>
       <div class="sh-sec"><p class="sh-label">🎨 화면</p><div class="seg">${[['dark', '다크'], ['light', '라이트'], ['auto', '기기 설정']].map(([v, l]) => `<button type="button" data-act="theme" data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-      <div class="sh-sec"><p class="sh-label">📅 구글 캘린더 → 앱 (가져오기)</p>
-        <label class="field"><span>iCal 비공개 주소</span><input type="password" data-field="ics_url" value="${esc(S.settings.ics_url || '')}" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false"></label>
-        <label class="field" style="margin-top:8px"><span>가져올 키워드 (쉼표로 여러 개)</span><input data-field="cal_keyword" value="${esc(S.settings.cal_keyword || '동준')}"></label>
-        <div class="row" style="margin-top:8px"><button class="btn" type="button" data-act="cal-sync">지금 동기화</button></div>
-        <p class="hint">마지막 동기화: ${synced} · 앱을 열 때 3시간마다 자동으로 가져와요.</p>
-        <div class="tip">구글 캘린더(PC) → ⚙️ 설정 → 왼쪽 <b>내 캘린더의 설정</b>에서 캘린더 선택 → <b>캘린더 통합</b> → <b>iCal 형식의 비공개 주소</b> 복사해서 위에 붙여넣기</div></div>
-      <div class="sh-sec"><p class="sh-label">📤 앱 → 구글 캘린더 (바로 추가 · 추가 전용)</p>
+      <div class="sh-sec"><p class="sh-label">📅 구글 캘린더 연결 <span>· 읽기 + 추가만, 삭제 없음</span></p>
         <label class="field"><span>연결 주소 (Apps Script 웹앱 URL)</span><input type="password" data-field="gas_url" value="${esc(S.settings.gas_url || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" spellcheck="false"></label>
-        <div class="row" style="margin-top:8px"><button class="btn" type="button" data-act="gas-test">연결 테스트</button></div>
-        <p class="hint">이 연결은 일정 <b>추가만</b> 할 수 있어요. 수정·삭제 기능은 없어서 실수로 지워질 일이 없어요.</p></div>
+        <label class="field" style="margin-top:8px"><span>연결 비밀키 (스크립트의 TOKEN과 같은 값)</span><input type="password" data-field="gas_token" value="${esc(S.settings.gas_token || '')}" autocomplete="off" spellcheck="false"></label>
+        <label class="field" style="margin-top:8px"><span>내 일정 색 · 이 색 일정은 전부 가져와요 ${gc ? `<span class="gdot" style="--gc:${gc[2]}"></span>` : ''}</span>
+          <select data-field="cal_color"><option value="" ${mc ? '' : 'selected'}>색으로는 안 가져오기</option>${GCOLORS.map(([id, name]) => `<option value="${id}" ${mc === id ? 'selected' : ''}>${id}. ${name}${id === '1' ? ' (보라미디어 캘린더의 동준 색)' : ''}</option>`).join('')}</select></label>
+        <label class="field" style="margin-top:8px"><span>내 일정 키워드 · 제목에 들어가면 가져와요 (쉼표로 여러 개)</span><input data-field="cal_keyword" value="${esc(S.settings.cal_keyword || '동준')}"></label>
+        <div class="row" style="margin-top:8px"><button class="btn" type="button" data-act="gas-test">연결 테스트</button><button class="btn" type="button" data-act="cal-sync">지금 동기화</button></div>
+        <p class="hint">마지막 동기화: ${synced} · 앱을 열 때 3시간마다 자동으로 가져와요. 앱에서 추가한 일정은 구글 캘린더에 내 일정 색으로 들어가요.</p>
+        <p class="hint">이 연결은 일정을 <b>읽고 추가만</b> 할 수 있어요. 수정·삭제 기능이 없어서 구글 캘린더 일정이 지워질 일이 없어요.</p>
+        <details class="sub"><summary>연결 없이 iCal 주소로 가져오기 (키워드만 · 색은 안 됨)</summary>
+          <label class="field" style="margin-top:6px"><span>iCal 비공개 주소</span><input type="password" data-field="ics_url" value="${esc(S.settings.ics_url || '')}" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off" spellcheck="false"></label>
+          <div class="tip" style="margin-top:8px">구글 캘린더(PC) → ⚙️ 설정 → <b>내 캘린더의 설정</b>에서 캘린더 선택 → <b>캘린더 통합</b> → <b>iCal 형식의 비공개 주소</b> 복사. 연결 주소가 있으면 그쪽이 먼저 쓰여요.</div>
+        </details></div>
       ${isOwner ? `<div class="sh-sec"><p class="sh-label">👥 멤버</p>${S.members.map(m => `<div class="member"><div class="who"><b>${esc(m.display_name || m.email)}</b><small>${esc(m.email || '')} · ${m.role === 'owner' ? '관리자' : m.approved ? '멤버' : '승인 대기'}</small></div>
           ${m.role === 'owner' ? '' : `${m.approved ? `<button class="btn sm" type="button" data-act="member-approve" data-id="${m.user_id}" data-v="0">해제</button>` : `<button class="btn sm primary" type="button" data-act="member-approve" data-id="${m.user_id}" data-v="1">승인</button>`}<button class="btn sm danger" type="button" data-act="member-remove" data-id="${m.user_id}">삭제</button>`}</div>`).join('')}
         <p class="hint">다른 사람이 같은 주소에서 가입하면 여기서 승인해야 보드를 볼 수 있어요.</p></div>` : ''}
@@ -937,13 +967,16 @@
         const name = v.trim(); if (S.me) S.me.display_name = name;
         sb.rpc('set_my_name', { p_name: name }).then(({ error }) => toast(error ? '저장 실패: ' + error.message : '이름을 저장했어요'));
       }
-      if (f === 'ics_url' || f === 'cal_keyword') {
-        saveSetting(f, v.trim()).then(ok => { if (ok && f === 'ics_url' && v.trim()) syncCalendar(true); });
+      if (f === 'ics_url') {
+        saveSetting(f, v.trim()).then(ok => { if (ok && v.trim() && !gasLinked()) syncCalendar(true); });
       }
-      if (f === 'gas_url') {
+      if (f === 'cal_keyword' || f === 'cal_color') {
+        saveSetting(f, v.trim()).then(ok => { refreshSheet(); if (ok && (gasLinked() || S.settings.ics_url)) syncCalendar(true); });
+      }
+      if (f === 'gas_url' || f === 'gas_token') {
         const u = v.trim();
-        if (u && !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec/.test(u)) { toast('https://script.google.com/macros/s/…/exec 형식의 주소를 넣어주세요'); return; }
-        saveSetting('gas_url', u).then(ok => { if (ok && u) A['gas-test'](); });
+        if (f === 'gas_url' && u && !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec/.test(u)) { toast('https://script.google.com/macros/s/…/exec 형식의 주소를 넣어주세요'); return; }
+        saveSetting(f, u).then(async ok => { if (ok && gasLinked() && await A['gas-test']()) syncCalendar(true); });
       }
     }
   }
@@ -1094,12 +1127,14 @@
     catch (e) { toast('캘린더 추가 실패: ' + (e.message || e)); a.disabled = false; a.textContent = '다시 시도'; }
   };
   A['gas-test'] = async () => {
-    const u = String(S.settings.gas_url || '').trim();
-    if (!u) { toast('연결 주소를 먼저 넣어주세요'); return; }
+    if (!gasUrl()) { toast('연결 주소를 먼저 넣어주세요'); return false; }
+    if (!String(S.settings.gas_token || '').trim()) { toast('연결 비밀키를 먼저 넣어주세요'); return false; }
     try {
-      const r = await fetch(u); const d = await r.json();
-      toast(d.ok && d.app === 'weekly-todo' ? '✅ 구글 캘린더 연결 OK (추가 전용)' : '연결은 됐지만 위클리용 스크립트가 아니에요');
-    } catch (e) { toast('연결 실패: 주소와 배포 권한(모든 사용자)을 확인해주세요'); }
+      const d = await gasCall({ action: 'ping' });
+      if (d.app !== 'weekly-todo') { toast('연결은 됐지만 위클리용 스크립트가 아니에요'); return false; }
+      toast(`✅ 구글 캘린더 연결 OK · ${d.calendar || '기본 캘린더'}`);
+      return true;
+    } catch (e) { toast('연결 실패: ' + (e.message || e)); return false; }
   };
   A.theme = a => { const v = a.dataset.v; ls.set('weekly-theme', v); applyTheme(v); refreshSheet(); };
   A['cal-sync'] = () => syncCalendar(true);
