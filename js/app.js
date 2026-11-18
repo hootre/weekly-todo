@@ -643,7 +643,7 @@
         + (d === td ? '<span class="today-badge">오늘</span>' : '')
         + '<span class="spacer"></span>'
         + (ps.length ? `<span class="day-count ${dn === ps.length ? 'all' : ''}">${dn === ps.length ? '✓ ' : ''}${dn}/${ps.length}</span>` : '')
-        + `<button class="memo-btn ${nt?.content ? 'has' : ''}" type="button" data-act="open-memo" data-day="${d}" aria-label="${DOW[i]}요일 메모">${ICON.pen}메모</button>`;
+        + `<button class="memo-btn ${nt?.content ? 'has' : ''}" type="button" data-act="open-memo" data-day="${d}" aria-label="${DOW[i]}요일 메모">${ICON.pen}<span>메모</span></button>`;
       $('.day-extra', art).innerHTML = (nt?.rest ? '<div class="rest-banner">🌙 휴식</div>' : '')
         + (nt?.content ? `<div class="day-memo" data-act="open-memo" data-day="${d}">${esc(nt.content)}</div>` : '');
       $('.events', art).innerHTML = eventsOn(d).map(eventHTML).join('');
