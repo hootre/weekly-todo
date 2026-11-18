@@ -19,8 +19,9 @@
   const dayLabel = s => { const d = fromYmd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일 (${dowOf(s)})`; };
   const STATUSES = ['기획', '촬영', '편집', '수정대기', '완료'];
   const GOALS = ['완료', '완성', '기획', '수정', '컨펌', '업로드', '준비'];
-  // 클라이언트 색 (제목 맨 앞 [클라이언트]마다 하나씩). 초록은 [개인] 몫이라 자동으로는 안 줌
-  const PALETTE = ['#4c8dff', '#ff5c5c', '#f2a516', '#a66bff', '#17b3a3', '#f0559b', '#ff7a2f', '#7cbb1e', '#22b8d6', '#6a6fff', '#d65cf0', '#b08a5a', '#2fbf71'];
+  // 클라이언트 색 (제목 맨 앞 [클라이언트]마다 하나씩). 앞쪽일수록 서로 확실히 달라 보이는 순서.
+  // 초록(마지막)은 [개인] 몫이라 자동으로는 안 줌
+  const PALETTE = ['#4c8dff', '#ff5c5c', '#f2a516', '#a66bff', '#17b3a3', '#f0559b', '#7cbb1e', '#b08a5a', '#22b8d6', '#ff7a2f', '#6a6fff', '#d65cf0', '#2fbf71'];
   const GREEN = '#2fbf71';
   const PERSONAL = '개인';
   // 구글 캘린더 일정 색 (colorId · 이름 · 색)
@@ -111,17 +112,14 @@
     S.plans.forEach(p => { if (!p.task_id) add(splitClient(p.title)[0]); });
     return [...n.keys()].sort((a, b) => n.get(b) - n.get(a) || a.localeCompare(b));
   }
-  // 처음 보는 클라이언트에 아직 안 쓴 색을 정해서 저장 → 모든 기기에서 같은 색
+  // 처음 보는 클라이언트에 아직 안 쓴 색을 정해서 저장 → 모든 기기에서 같은 색 (많이 쓰는 클라이언트가 앞 색)
   function ensureClientColors() {
-    const map = { ...clientColors() }, present = new Set(allClients());
-    const used = new Set([GREEN, ...Object.entries(map).filter(([c]) => present.has(c)).map(([, v]) => v)]);
-    const items = [...S.tasks.map(t => [t.created_at, clientOf(t)]), ...S.plans.filter(p => !p.task_id).map(p => [p.created_at, splitClient(p.title)[0]])]
-      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    const map = { ...clientColors() }, present = allClients();
+    const used = new Set([GREEN, ...present.map(c => map[c]).filter(isHex)]);
     let changed = false;
-    for (const [, c] of items) {
-      if (!c || c === PERSONAL || isHex(map[c])) continue;
-      const h = hashColor(c);
-      map[c] = !used.has(h) ? h : (PALETTE.find(x => !used.has(x)) || h);
+    for (const c of present) {
+      if (c === PERSONAL || isHex(map[c])) continue;
+      map[c] = PALETTE.find(x => !used.has(x)) || hashColor(c);
       used.add(map[c]); changed = true;
     }
     if (changed) saveSetting('client_colors', JSON.stringify(map));
