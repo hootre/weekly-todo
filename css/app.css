@@ -148,6 +148,7 @@ body.is-dragging .strip-day { border-style: dashed; border-color: var(--primary)
 
 /* ---------- 메인 ---------- */
 .main { padding: 12px 12px calc(env(safe-area-inset-bottom) + 40px); max-width: 1400px; margin: 0 auto; display: grid; gap: 12px; }
+.main > * { min-width: 0; } /* 긴 내용 때문에 폰에서 가로로 넘치지 않게 */
 .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--line); }
 .count { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 750; text-align: center; vertical-align: 2px; }
 .foot { text-align: center; font-size: 12px; margin: 8px 0 0; }
