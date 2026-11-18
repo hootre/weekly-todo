@@ -19,14 +19,15 @@
   const dayLabel = s => { const d = fromYmd(s); return `${d.getMonth() + 1}월 ${d.getDate()}일 (${dowOf(s)})`; };
   const STATUSES = ['기획', '촬영', '편집', '수정대기', '완료'];
   const GOALS = ['완료', '완성', '기획', '수정', '컨펌', '업로드', '준비'];
-  const KINDS = ['촬영', '편집', '개인'];
-  const KIND_CLASS = { 촬영: 'k-shoot', 편집: 'k-edit', 개인: 'k-personal' };
+  // 클라이언트 색 (제목 맨 앞 [클라이언트]마다 하나씩). 초록은 [개인] 몫이라 자동으로는 안 줌
+  const PALETTE = ['#4c8dff', '#ff5c5c', '#f2a516', '#a66bff', '#17b3a3', '#f0559b', '#ff7a2f', '#7cbb1e', '#22b8d6', '#6a6fff', '#d65cf0', '#b08a5a', '#2fbf71'];
+  const GREEN = '#2fbf71';
+  const PERSONAL = '개인';
   // 구글 캘린더 일정 색 (colorId · 이름 · 색)
   const GCOLORS = [['1', '라벤더', '#7986cb'], ['2', '세이지', '#33b679'], ['3', '포도', '#8e24aa'], ['4', '플라밍고', '#e67c73'],
     ['5', '바나나', '#f6bf26'], ['6', '귤', '#f4511e'], ['7', '공작', '#039be5'], ['8', '흑연', '#616161'],
     ['9', '블루베리', '#3f51b5'], ['10', '바질', '#0b8043'], ['11', '토마토', '#d50000']];
   const gcolor = id => GCOLORS.find(c => c[0] === id) || null;
-  const kindCls = k => KIND_CLASS[k] || 'k-none';
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
     : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
   const haptic = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (_) { /* noop */ } };
@@ -41,18 +42,6 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* noop */ } },
   };
 
-  // ---- 일정 종류 추론 (촬영 / 편집 / 개인) ----
-  const PERSONAL_RE = /휴가|개인|예비군|병원|약속|생일|휴무|연차|반차|가족|여행/;
-  const SHOOT_RE = /촬영|스케치|인터뷰|공연|행사|현장|로케|녹화|중계|답사/;
-  const EDIT_RE = /편집|수정|컨펌|렌더|자막|색보정|믹싱|모션|마감|완성|납품|마무리|릴리즈|업로드|전달|피드백/;
-  function inferKind(title, source, status) {
-    const t = String(title || '');
-    if (PERSONAL_RE.test(t)) return '개인';
-    if (status === '촬영' || SHOOT_RE.test(t)) return '촬영';
-    if (EDIT_RE.test(t)) return '편집';
-    if (source === 'gcal') return /^\s*\[/.test(t) && !/^\s*\[동준\]/.test(t) ? '촬영' : '개인';
-    return '편집';
-  }
 
   // ================= config / client =================
   const CFG = window.WEEKLY_CONFIG || {};
@@ -68,7 +57,7 @@
     view: ls.get('weekly-view', 'week') === 'month' ? 'month' : 'week',
     weekStart: mondayOf(new Date()), month: firstOfMonth(new Date()),
     tasks: [], plans: [], notes: {}, settings: {}, members: [],
-    filter: 'all', kindFilter: 'all', dragging: false, pendingRender: false, lastDragEnd: 0,
+    filter: 'all', dragging: false, pendingRender: false, lastDragEnd: 0,
     sheet: null, prevStatus: {}, syncing: false, sortablesReady: false, followToday: true,
   };
   const taskById = id => S.tasks.find(t => t.id === id);
@@ -83,10 +72,60 @@
   const periodDays = () => (S.view === 'month' ? monthDays() : weekDays());
   const plansOn = d => S.plans.filter(p => p.day === d).sort(bySort);
   const note = key => S.notes[key] || (S.notes[key] = { key, content: null, rest: false });
-  const kindOfTask = t => (t ? (t.kind || inferKind(t.title, t.source, t.status)) : '편집');
-  const kindOfPlan = p => { const t = p.task_id && taskById(p.task_id); return t ? kindOfTask(t) : (p.kind || inferKind(p.title, 'manual')); };
   const planTitle = p => { const t = p.task_id && taskById(p.task_id); return t ? t.title : (p.title || '(제목 없음)'); };
   const keywords = () => (S.settings.cal_keyword || '동준').split(',').map(x => x.trim()).filter(Boolean);
+
+  // ---- 클라이언트: 제목 맨 앞 [ ] 안의 이름. [개인]과 캘린더의 [동준](내 키워드)은 개인 ----
+  function splitClient(title) {
+    const s = String(title || ''), m = s.match(/^\s*\[([^\]]+)\]\s*/);
+    if (!m) return [null, s.trim()];
+    const c = m[1].trim();
+    return [keywords().includes(c) ? PERSONAL : c || null, s.slice(m[0].length).trim()];
+  }
+  const clientOf = t => (t ? splitClient(t.title)[0] : null);
+  const clientOfPlan = p => { const t = p.task_id && taskById(p.task_id); return t ? clientOf(t) : splitClient(p.title)[0]; };
+  let ccCache = { raw: null, map: {} };
+  function clientColors() {
+    const raw = S.settings.client_colors || '';
+    if (ccCache.raw !== raw) { let map = {}; try { map = JSON.parse(raw || '{}') || {}; } catch (_) { /* noop */ } ccCache = { raw, map }; }
+    return ccCache.map;
+  }
+  const isHex = v => /^#[0-9a-f]{6}$/i.test(String(v || ''));
+  const hashColor = c => { let h = 0; for (const ch of c) h = (h * 31 + ch.codePointAt(0)) >>> 0; return PALETTE[h % (PALETTE.length - 1)]; };
+  function clientColor(c) {
+    if (!c) return 'var(--k-none)';
+    const v = clientColors()[c];
+    if (isHex(v)) return v;
+    return c === PERSONAL ? 'var(--k-personal)' : hashColor(c);
+  }
+  const kc = c => `style="--kc:${clientColor(c)}"`;
+  // 제목 표시: [클라이언트]는 색 글씨로, 나머지는 그대로 (캘린더 일정은 끝의 _동준 떼고)
+  function titleHTML(title, cal) {
+    const [c, rest] = splitClient(cal ? compactTitle(title) : title);
+    return (c ? `<b class="ctag">${esc(c)}</b>` : '') + esc(rest || title);
+  }
+  // 지금 보이는 클라이언트 (많은 순)
+  function allClients() {
+    const n = new Map(), add = c => { if (c) n.set(c, (n.get(c) || 0) + 1); };
+    S.tasks.forEach(t => add(clientOf(t)));
+    S.plans.forEach(p => { if (!p.task_id) add(splitClient(p.title)[0]); });
+    return [...n.keys()].sort((a, b) => n.get(b) - n.get(a) || a.localeCompare(b));
+  }
+  // 처음 보는 클라이언트에 아직 안 쓴 색을 정해서 저장 → 모든 기기에서 같은 색
+  function ensureClientColors() {
+    const map = { ...clientColors() }, present = new Set(allClients());
+    const used = new Set([GREEN, ...Object.entries(map).filter(([c]) => present.has(c)).map(([, v]) => v)]);
+    const items = [...S.tasks.map(t => [t.created_at, clientOf(t)]), ...S.plans.filter(p => !p.task_id).map(p => [p.created_at, splitClient(p.title)[0]])]
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    let changed = false;
+    for (const [, c] of items) {
+      if (!c || c === PERSONAL || isHex(map[c])) continue;
+      const h = hashColor(c);
+      map[c] = !used.has(h) ? h : (PALETTE.find(x => !used.has(x)) || h);
+      used.add(map[c]); changed = true;
+    }
+    if (changed) saveSetting('client_colors', JSON.stringify(map));
+  }
   // 내 일정 색: 설정 안 했으면 1번(라벤더 · 보라미디어 캘린더의 '동준' 색), ''이면 색으로는 안 가져옴
   const myColor = () => { const v = S.settings.cal_color; return v == null ? '1' : (gcolor(String(v)) ? String(v) : ''); };
   const gasUrl = () => String(S.settings.gas_url || '').trim();
@@ -96,7 +135,7 @@
     ? ymd(S.month) === ymd(firstOfMonth(new Date()))
     : ymd(S.weekStart) === ymd(mondayOf(new Date())));
 
-  const matchFilter = t => (S.filter === 'all' || (t.project || '') === S.filter) && (S.kindFilter === 'all' || kindOfTask(t) === S.kindFilter);
+  const matchFilter = t => S.filter === 'all' || clientOf(t) === S.filter;
   // 진행 중인 작업: 완료 안 된 내 작업 전부 (요일 배정 여부와 상관없이), 다음 할 날이 가까운 순 · 미배정은 맨 뒤
   function doingTasks(ignoreFilter) {
     return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && (ignoreFilter || matchFilter(t)))
@@ -242,6 +281,7 @@
     S.members = m;
     const mine = m.find(x => x.user_id === S.session?.user.id); if (mine) S.me = mine;
     setSync('ok'); saveCache(); requestRender();
+    ensureClientColors();
   }
   const cacheKey = () => 'weekly-cache-' + (S.session?.user.id || 'anon');
   function saveCache() {
@@ -286,7 +326,6 @@
     const now = new Date().toISOString();
     return { id: uuid(), title: f.title, project: f.project ?? null, status: f.status ?? null, ok: !!f.ok, memo: f.memo ?? null,
       due_date: f.due_date ?? null, end_date: null, location: null, detail: null, source: 'manual', ext_id: null,
-      kind: f.kind || inferKind(f.title, 'manual', f.status),
       sort: nextTaskSort(), archived: false, created_at: now, updated_at: now };
   }
   function updateTask(t, patch) {
@@ -315,9 +354,9 @@
     const ops = resort(list, plan.id);
     return [{ op: 'insert', table: 'plans', row: planRow(plan) }, ...ops];
   }
-  function addFreePlan(title, day, kind) {
+  function addFreePlan(title, day) {
     const list = plansOn(day);
-    const plan = { id: uuid(), task_id: null, title, goal: null, day, done: false, sort: ((list.at(-1)?.sort) || 0) + 10, kind: kind || inferKind(title, 'manual'), created_at: new Date().toISOString() };
+    const plan = { id: uuid(), task_id: null, title, goal: null, day, done: false, sort: ((list.at(-1)?.sort) || 0) + 10, kind: null, created_at: new Date().toISOString() };
     S.plans.push(plan);
     return [{ op: 'insert', table: 'plans', row: planRow(plan) }];
   }
@@ -340,7 +379,7 @@
     const ops = [];
     if (!p.task_id) {
       const parsed = parseLine(p.title || '새 할 일') || { title: p.title || '새 할 일' };
-      const t = newTask({ ...parsed, kind: p.kind || parsed.kind });
+      const t = newTask(parsed);
       S.tasks.push(t);
       ops.push({ op: 'insert', table: 'tasks', row: taskRow(t) });
     }
@@ -380,20 +419,19 @@
   function parseLine(raw) {
     let s = String(raw || '').replace(/^\s*([-•*·]|\d+[.)])\s*/, '').trim();
     if (!s) return null;
-    let ok = false, status = null, project = null, kind = null;
+    let ok = false, status = null, project = null;
     s = s.replace(/\s*(오케이|okay|ok|✅|✔️?)\s*$/i, () => { ok = true; return ''; }).trim();
     const pm = s.match(/^\[([^\]]+)\]\s*/);
     if (pm) { project = pm[1].trim(); s = s.slice(pm[0].length); }
     s = s.replace(/\s*\(([^)]*)\)\s*/g, (m, inner) => {
-      if (/개인/.test(inner) && !kind) { kind = '개인'; return ' '; }
+      if (/^\s*개인\s*$/.test(inner) && !project) { project = PERSONAL; return ' '; }
       const st = normStatus(inner); if (st && !status) { status = st; return ' '; } return m;
     }).replace(/\s+/g, ' ').trim();
     s = s.replace(/\s*(오케이|okay|ok|✅)\s*$/i, () => { ok = true; return ''; }).trim();
     if (!s) return null;
-    if (!project) project = s.split(' ')[0];
-    const title = pm && !s.startsWith(project) ? `${project} ${s}` : s;
-    if (!kind && status === '촬영') kind = '촬영';
-    return { title, project, status, ok, kind };
+    // [클라이언트]는 제목에 그대로 둬요 (색 구분에 씀)
+    const title = project ? `[${project}] ${s}` : s;
+    return { title, project, status, ok };
   }
   const bracketProject = s => (String(s).match(/^\s*\[([^\]]+)\]/) || [])[1] || null;
 
@@ -475,7 +513,7 @@
       });
       const known = new Set(S.tasks.map(t => t.ext_id).filter(Boolean));
       const rows = [...seen.values()];
-      const fresh = rows.filter(r => !known.has(r.ext_id)).map(r => ({ ...r, kind: inferKind(r.title, 'gcal') }));
+      const fresh = rows.filter(r => !known.has(r.ext_id));
       const existing = rows.filter(r => known.has(r.ext_id));
       for (const group of [fresh, existing]) {
         if (!group.length) continue;
@@ -504,7 +542,9 @@
     const kw = keywords()[0] || '';
     let t = String(ev.title || '').trim();
     if (!t || !kw || t.includes(kw)) return t;
-    return ev.kind === '개인' ? `[${kw}] ${t}` : `${t}_${kw}`;
+    // 개인 일정은 팀 캘린더 규칙대로 [동준] 제목, 일은 [클라이언트] 제목_동준
+    const [c, rest] = splitClient(t);
+    return c === PERSONAL ? `[${kw}] ${rest}` : `${t}_${kw}`;
   }
   const plus2h = hm => { const [h, m] = hm.split(':').map(Number); return `${pad(Math.min(23, h + 2))}:${pad(m)}`; };
   function gcalTemplateUrl(ev, title) {
@@ -525,10 +565,10 @@
       toast('구글 캘린더 창에서 저장을 눌러주세요 · 설정에서 연결하면 바로 추가돼요');
       return true;
     }
-    // 구글 캘린더에는 '내 일정 색'으로 칠해요 (팀 캘린더 색 규칙 유지). 촬영/편집/개인 색은 앱 안에서만.
+    // 구글 캘린더에는 '내 일정 색'으로 칠해요 (팀 캘린더 색 규칙 유지). 클라이언트 색은 앱 안에서만.
     const data = await gasCall({ action: 'add', title, start: ev.date, end: ev.end && ev.end > ev.date ? ev.end : null,
       startTime: ev.st || null, endTime: ev.st ? (ev.et || plus2h(ev.st)) : null, location: ev.loc || '', description: ev.memo || '', color: myColor() || null });
-    const row = { ext_id: 'gcal:' + data.id, title, project: bracketProject(title), kind: ev.kind, due_date: ev.date,
+    const row = { ext_id: 'gcal:' + data.id, title, project: bracketProject(title), due_date: ev.date,
       end_date: ev.end && ev.end > ev.date ? ev.end : ev.date, location: ev.loc || null, detail: ev.memo || null, source: 'gcal' };
     const r = await sb.from('tasks').upsert(row, { onConflict: 'ext_id' });
     if (r.error) throw r.error;
@@ -579,13 +619,13 @@
     const days = weekDays(), td = today();
     $$('.strip-day').forEach((el, i) => {
       const d = days[i], ps = plansOn(d), dn = ps.filter(p => p.done).length, rest = S.notes['day:' + d]?.rest;
-      const kinds = [...eventsOn(d).filter(t => t.status !== '완료').map(kindOfTask), ...ps.filter(p => !p.done).map(kindOfPlan)];
+      const cls = [...eventsOn(d).filter(t => t.status !== '완료').map(clientOf), ...ps.filter(p => !p.done).map(clientOfPlan)];
       el.classList.toggle('is-today', d === td);
       el.classList.toggle('is-rest', !!rest && !ps.length);
       el.classList.toggle('all-done', ps.length > 0 && dn === ps.length);
       $('.d', el).textContent = DOW[i];
       $('.n', el).textContent = fromYmd(d).getDate();
-      $('.c', el).innerHTML = kinds.length ? kinds.slice(0, 4).map(k => `<i class="${kindCls(k)}"></i>`).join('') : rest ? '휴식' : '';
+      $('.c', el).innerHTML = cls.length ? cls.slice(0, 4).map(c => `<i ${kc(c)}></i>`).join('') : rest ? '휴식' : '';
       const drop = $('.strip-drop', el); drop.dataset.day = d; drop.innerHTML = '';
     });
   }
@@ -598,8 +638,8 @@
   function doingHTML(t) {
     const nx = nextPlanDay(t.id);
     const when = nx ? `<span class="when ${nx === today() ? 'now' : ''}">${whenLabel(nx)}</span>` : '<span class="when none">미배정</span>';
-    return `<li class="item chip ${kindCls(kindOfTask(t))}" data-kind="task" data-id="${t.id}" data-act="open-task">${when}
-      <span class="t">${esc(t.title)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
+    return `<li class="item chip" ${kc(clientOf(t))} data-kind="task" data-id="${t.id}" data-act="open-task">${when}
+      <span class="t">${titleHTML(t.title)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
   }
   const DONE_SHOW = 6;
   function renderTray() {
@@ -607,12 +647,13 @@
     $('#tray').classList.toggle('collapsed', collapsed);
     $('#btn-tray').textContent = collapsed ? '펼치기' : '접기';
     const all = doingTasks(true);
-    const projects = [...new Set(S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료').map(t => t.project || ''))].filter(Boolean);
-    if (S.filter !== 'all' && !projects.includes(S.filter)) S.filter = 'all';
-    const kindChips = [`<button class="filter ${S.kindFilter === 'all' && S.filter === 'all' ? 'on' : ''}" data-act="kfilter" data-v="all">전체</button>`,
-      ...KINDS.map(k => `<button class="filter kind ${kindCls(k)} ${S.kindFilter === k ? 'on' : ''}" data-act="kfilter" data-v="${k}"><i></i>${k}</button>`)];
-    const projChips = projects.length >= 2 ? ['<span class="filter-sep"></span>', ...projects.map(p => `<button class="filter ${S.filter === p ? 'on' : ''}" data-act="filter" data-v="${esc(p)}">${esc(p)}</button>`)] : [];
-    $('#filters').innerHTML = [...kindChips, ...projChips].join('');
+    // 클라이언트 필터 (진행 중 작업이 많은 순)
+    const cnt = new Map();
+    [...all, ...doneTasks(true)].forEach((t, i) => { const c = clientOf(t); if (c) cnt.set(c, (cnt.get(c) || 0) + (i < all.length ? 100 : 1)); });
+    const clients = [...cnt.keys()].sort((a, b) => cnt.get(b) - cnt.get(a) || a.localeCompare(b));
+    if (S.filter !== 'all' && !clients.includes(S.filter)) S.filter = 'all';
+    $('#filters').innerHTML = [`<button class="filter ${S.filter === 'all' ? 'on' : ''}" data-act="filter" data-v="all">전체</button>`,
+      ...clients.map(c => `<button class="filter kind ${S.filter === c ? 'on' : ''}" ${kc(c)} data-act="filter" data-v="${esc(c)}"><i></i>${esc(c)}</button>`)].join('');
     // 진행 중인 작업
     const list = doingTasks(), bl = $('#backlog');
     bl.dataset.empty = all.length ? '이 조건의 진행 중 작업은 없어요' : '진행 중인 작업이 없어요';
@@ -623,13 +664,13 @@
     // 완료된 작업
     const done = doneTasks(), doneAll = doneTasks(true).length;
     $('#done-count').textContent = done.length;
-    $('#done-list').innerHTML = (S.doneAll ? done : done.slice(0, DONE_SHOW)).map(t => `<li class="${kindCls(kindOfTask(t))}" data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${esc(t.title)}</span></li>`).join('')
+    $('#done-list').innerHTML = (S.doneAll ? done : done.slice(0, DONE_SHOW)).map(t => `<li ${kc(clientOf(t))} data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${titleHTML(t.title)}</span></li>`).join('')
       + (done.length > DONE_SHOW ? `<li class="more" data-act="toggle-done">${S.doneAll ? '접기' : `+${done.length - DONE_SHOW}개 더 보기`}</li>` : '');
     $('#done-archive').hidden = !doneAll;
     $('#done-archive').textContent = `${doneAll}개 보관`;
     // 다가오는 캘린더 일정 (맨 아래)
     const up = upcomingEvents();
-    $('#upcoming').innerHTML = up.map(t => `<li class="item chip cal ${kindCls(kindOfTask(t))}" data-kind="task" data-id="${t.id}" data-act="open-event">${ddayHTML(t.due_date)}<span class="ktag">${kindOfTask(t)}</span><span class="t">${md(t.due_date)}(${dowOf(t.due_date)}) ${esc(compactTitle(t.title))}</span></li>`).join('');
+    $('#upcoming').innerHTML = up.map(t => `<li class="item chip cal" ${kc(clientOf(t))} data-kind="task" data-id="${t.id}" data-act="open-event">${ddayHTML(t.due_date)}<span class="t">${md(t.due_date)}(${dowOf(t.due_date)}) ${titleHTML(t.title, true)}</span></li>`).join('');
     $('#upcoming-count').textContent = up.length;
   }
   function autosize(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
@@ -645,16 +686,16 @@
   }
   function planHTML(p) {
     const t = p.task_id ? taskById(p.task_id) : null;
-    const meta = t ? `<div class="item-meta">${t.project ? `<span>${esc(t.project)}</span>` : ''}${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}</div>` : '';
-    return `<li class="item plan ${kindCls(kindOfPlan(p))} ${p.done ? 'is-done' : ''}" data-kind="plan" data-id="${p.id}" data-act="open-plan">
+    const meta = t ? `<div class="item-meta">${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}</div>` : '';
+    return `<li class="item plan ${p.done ? 'is-done' : ''}" ${kc(clientOfPlan(p))} data-kind="plan" data-id="${p.id}" data-act="open-plan">
       <button class="check" type="button" data-act="toggle-plan" aria-label="체크">${ICON.check}</button>
-      <div class="item-body"><div class="item-title">${esc(planTitle(p))}${p.goal ? ` <span class="goal">${esc(p.goal)}</span>` : ''}</div>${meta}</div></li>`;
+      <div class="item-body"><div class="item-title">${titleHTML(planTitle(p))}${p.goal ? ` <span class="goal">${esc(p.goal)}</span>` : ''}</div>${meta}</div></li>`;
   }
   function eventHTML(t) {
-    const cal = t.source === 'gcal', done = t.status === '완료', k = kindOfTask(t);
-    return `<div class="event ${kindCls(k)} ${done ? 'is-done' : ''}" data-act="open-event" data-id="${t.id}">
+    const cal = t.source === 'gcal', done = t.status === '완료';
+    return `<div class="event ${done ? 'is-done' : ''}" ${kc(clientOf(t))} data-act="open-event" data-id="${t.id}">
       <button class="check" type="button" data-act="toggle-event" data-id="${t.id}" aria-label="체크">${ICON.check}</button>
-      <div class="eb"><span class="tag">${cal ? `📅 ${k}` : '⏰ 마감'}</span>${esc(t.title)}${t.location ? `<small>📍 ${esc(t.location)}</small>` : ''}</div></div>`;
+      <div class="eb"><span class="tag">${cal ? '📅' : '⏰ 마감'}</span>${titleHTML(t.title, cal)}${t.location ? `<small>📍 ${esc(t.location)}</small>` : ''}</div></div>`;
   }
   function renderWeek() {
     const days = weekDays(), td = today();
@@ -697,10 +738,10 @@
       c.textContent = ps.length ? `${dn}/${ps.length}` : '';
       c.classList.toggle('all', ps.length > 0 && dn === ps.length);
       const items = [
-        ...evs.map(t => ({ k: kindOfTask(t), title: t.source === 'gcal' ? compactTitle(t.title).replace(/^\s*\[[^\]]*\]\s*/, '') : '⏰ ' + t.title, done: t.status === '완료', cal: true })),
-        ...ps.map(p => ({ k: kindOfPlan(p), title: planTitle(p), done: p.done, cal: false })),
+        ...evs.map(t => ({ c: clientOf(t), title: (t.source === 'gcal' ? '' : '⏰ ') + splitClient(t.source === 'gcal' ? compactTitle(t.title) : t.title)[1], done: t.status === '완료', cal: true })),
+        ...ps.map(p => ({ c: clientOfPlan(p), title: splitClient(planTitle(p))[1], done: p.done, cal: false })),
       ];
-      $('.mbody', cell).innerHTML = items.slice(0, max).map(x => `<span class="mi ${kindCls(x.k)} ${x.cal ? 'cal' : ''} ${x.done ? 'done' : ''}">${esc(x.title)}</span>`).join('')
+      $('.mbody', cell).innerHTML = items.slice(0, max).map(x => `<span class="mi ${x.cal ? 'cal' : ''} ${x.done ? 'done' : ''}" ${kc(x.c)} title="${esc(x.c || '')}">${esc(x.title)}</span>`).join('')
         + (items.length > max ? `<span class="mmore">+${items.length - max}</span>` : '');
     });
   }
@@ -803,7 +844,8 @@
     const td = today();
     return `<div class="days7">${weekDays().map((d, i) => `<button type="button" data-act="${act}" data-day="${d}" ${extraAttr} class="${isOn(d) ? 'on' : ''} ${d === td ? 'today' : ''}">${DOW[i]}<small>${fromYmd(d).getDate()}</small></button>`).join('')}</div>`;
   };
-  const kindSeg = (cur, act) => `<div class="kseg">${KINDS.map(k => `<button type="button" class="${kindCls(k)} ${cur === k ? 'on' : ''}" data-act="${act}" data-k="${k}"><span class="kdot"></span>${k}</button>`).join('')}</div>`;
+  // 시트 위쪽: 이 항목의 클라이언트 (제목 [ ]에서 읽음)
+  const clientLine = (c, extra = '') => `<p class="client-line" ${kc(c)}><span class="kdot"></span>${c ? `<b>${esc(c)}</b>` : '<span>클라이언트 없음</span>'}<small>· 제목 맨 앞 [ ]로 바꿔요${extra}</small></p>`;
   const statusSeg = (cur, tid) => `<div class="seg">${['', ...STATUSES].map(s => `<button type="button" data-act="task-status" data-s="${s}" ${tid ? `data-tid="${tid}"` : ''} class="${(cur || '') === s ? 'on' : ''}">${s || '없음'}</button>`).join('')}</div>`;
   const linkify = s => esc(s).replace(/https?:\/\/[^\s<]+/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
 
@@ -812,14 +854,11 @@
     const days = weekDays();
     const on = new Set(S.plans.filter(p => p.task_id === id && days.includes(p.day)).map(p => p.day));
     return head('', `<input class="sh-title" data-field="title" value="${esc(t.title)}" aria-label="제목" enterkeyhint="done">`)
-      + `<div class="sh-sec"><p class="sh-label">종류</p>${kindSeg(kindOfTask(t), 'set-kind')}</div>
-      <div class="sh-sec"><p class="sh-label">진행 상태</p>${statusSeg(t.status)}</div>
+      + clientLine(clientOf(t), ' (개인 일정은 [개인])')
+      + `<div class="sh-sec"><p class="sh-label">진행 상태</p>${statusSeg(t.status)}</div>
       <div class="sh-sec"><p class="sh-label">${S.view === 'week' ? '이번 주' : `${md(days[0])} 주`} 요일 배정 <span>· 여러 날 선택 가능</span></p>${days7('task-day', d => on.has(d))}</div>
       <div class="sh-sec"><label class="toggle"><span>오케이 (컨펌 완료)</span><input type="checkbox" data-field="ok" ${t.ok ? 'checked' : ''}></label></div>
-      <div class="sh-sec row">
-        <label class="field"><span>프로젝트</span><input data-field="project" value="${esc(t.project || '')}" placeholder="예: 교촌"></label>
-        <label class="field"><span>마감일</span><input type="date" data-field="due_date" value="${t.due_date || ''}"></label>
-      </div>
+      <div class="sh-sec"><label class="field"><span>마감일</span><input type="date" data-field="due_date" value="${t.due_date || ''}"></label></div>
       <div class="sh-sec"><label class="field"><span>메모</span><textarea data-field="memo" data-autosize rows="3" placeholder="링크, 수정사항 등">${esc(t.memo || '')}</textarea></label></div>
       <div class="sh-actions"><button class="btn danger" type="button" data-act="task-delete">삭제</button><button class="btn" type="button" data-act="task-archive">보관</button><button class="btn primary" type="button" data-act="close-sheet">완료</button></div>`;
   };
@@ -831,7 +870,7 @@
     const range = t.end_date && t.end_date !== t.due_date ? `${dayLabel(t.due_date)} – ${dayLabel(t.end_date)}` : dayLabel(t.due_date);
     return head(`📅 ${esc(t.title)}`)
       + `<p class="muted" style="margin:-4px 0 10px">${range}${t.location ? ` · 📍 ${esc(t.location)}` : ''}</p>
-      <div class="sh-sec"><p class="sh-label">종류 <span>· 앱에서만 바뀌어요</span></p>${kindSeg(kindOfTask(t), 'set-kind')}</div>
+      ${clientLine(clientOf(t), ' (구글 캘린더 제목)')}
       <div class="sh-sec"><label class="toggle"><span>완료 체크</span><input type="checkbox" data-field="evdone" ${t.status === '완료' ? 'checked' : ''}></label></div>
       <div class="sh-sec"><p class="sh-label">준비 일정 잡기 (${md(days[0])} 주)</p>${days7('task-day', d => on.has(d), 'data-goal="준비"')}</div>
       ${t.detail ? `<div class="sh-sec"><p class="sh-label">캘린더 내용</p><div class="detail">${linkify(t.detail)}</div></div>` : ''}
@@ -846,7 +885,7 @@
     const title = planTitle(p);
     return head(esc(title), t ? '' : `<input class="sh-title" data-field="ptitle" value="${esc(title)}" aria-label="제목" enterkeyhint="done">`)
       + `<p class="muted" style="margin:-4px 0 10px">${dayLabel(p.day)}</p>
-      <div class="sh-sec"><p class="sh-label">종류</p>${kindSeg(kindOfPlan(p), 'set-kind')}</div>
+      ${clientLine(clientOfPlan(p))}
       <div class="sh-sec"><label class="toggle"><span>이날 할 일 완료</span><input type="checkbox" data-field="pdone" ${p.done ? 'checked' : ''}></label></div>
       <div class="sh-sec"><label class="field"><span>이날 목표</span><input data-field="goal" value="${esc(p.goal || '')}" placeholder="예: 완료, 1차 편집, 컨펌 받기" enterkeyhint="done"></label>
         <div class="sugg">${GOALS.map(g => `<button type="button" data-act="plan-goal" data-goal="${g}">${g}</button>`).join('')}</div></div>
@@ -896,11 +935,10 @@
     const mode = ctx.mode || 'task';
     const tabs = `<div class="tabs"><button type="button" data-act="add-mode" data-v="task" class="${mode === 'task' ? 'on' : ''}">할 일</button><button type="button" data-act="add-mode" data-v="event" class="${mode === 'event' ? 'on' : ''}">📅 구글 캘린더 일정</button></div>`;
     if (mode === 'event') {
-      const ev = ctx.ev || (ctx.ev = { kind: '촬영', date: today() });
+      const ev = ctx.ev || (ctx.ev = { date: today() });
       const linked = gasLinked(), gc = gcolor(myColor());
       return head('추가') + tabs
-        + `<div class="sh-sec"><p class="sh-label">종류</p>${kindSeg(ev.kind, 'ev-kind')}</div>
-        <label class="field"><span>제목</span><input data-ef="title" value="${esc(ev.title || '')}" placeholder="예: [교촌] 신메뉴 촬영" enterkeyhint="done"></label>
+        + `<label class="field"><span>제목 · 맨 앞 [클라이언트], 개인 일정은 [개인]</span><input data-ef="title" value="${esc(ev.title || '')}" placeholder="예: [교촌] 신메뉴 촬영" enterkeyhint="done"></label>
         <p class="final-title" id="final-title"></p>
         <div class="sh-sec row">
           <label class="field"><span>날짜</span><input type="date" data-ef="date" value="${ev.date || ''}"></label>
@@ -919,9 +957,8 @@
     }
     const target = ctx.target || '';
     return head('추가') + tabs
-      + `<div class="sh-sec"><p class="sh-label">기본 종류 <span>· 줄에 (촬영) (개인)을 쓰면 그걸로</span></p>${kindSeg(ctx.kind || '편집', 'add-kind')}</div>
-      <label class="field"><span>한 줄에 하나씩 · <b>프로젝트 제목 (상태) 오케이</b> 형식 인식</span>
-        <textarea id="add-text" rows="5" placeholder="교촌 DID (편집) 오케이&#10;촌스러버 통합본 (기획)&#10;소프라노 뮤비">${esc(ctx.text || '')}</textarea></label>
+      + `<label class="field"><span>한 줄에 하나씩 · <b>[클라이언트] 제목 (상태) 오케이</b> 형식 인식 · 같은 [ ]는 같은 색</span>
+        <textarea id="add-text" rows="5" placeholder="[교촌] DID (편집) 오케이&#10;[준범] 소프라노 뮤비 (기획)&#10;[개인] 병원">${esc(ctx.text || '')}</textarea></label>
       <ul class="preview" id="add-preview"></ul>
       <div class="sh-sec"><p class="sh-label">어디에 둘까요?</p>
         <div class="seg" style="margin-bottom:6px"><button type="button" data-act="add-target" data-day="" class="${target ? '' : 'on'}">할 일 목록 (미배정)</button></div>
@@ -929,13 +966,12 @@
       <div class="sh-actions"><button class="btn" type="button" data-act="close-sheet">취소</button><button class="btn primary" type="button" data-act="add-submit" id="add-submit">추가</button></div>`;
   };
   function addItems() {
-    const base = S.sheet?.kind || '편집';
-    return ($('#add-text')?.value || '').split('\n').map(parseLine).filter(Boolean).map(x => ({ ...x, kind: x.kind || base }));
+    return ($('#add-text')?.value || '').split('\n').map(parseLine).filter(Boolean);
   }
   function renderAddPreview() {
     if (!$('#add-text')) return;
     const items = addItems();
-    $('#add-preview').innerHTML = items.map(x => `<li class="${kindCls(x.kind)}"><span class="ktag">${x.kind}</span><b>${esc(x.title)}</b>${x.status ? `<span class="pill" data-s="${esc(x.status)}">${esc(x.status)}</span>` : ''}${x.ok ? '<span class="okb">OK</span>' : ''}<span class="muted" style="font-size:12px">· ${esc(x.project)}</span></li>`).join('');
+    $('#add-preview').innerHTML = items.map(x => `<li ${kc(splitClient(x.title)[0])}><b>${titleHTML(x.title)}</b>${x.status ? `<span class="pill" data-s="${esc(x.status)}">${esc(x.status)}</span>` : ''}${x.ok ? '<span class="okb">OK</span>' : ''}</li>`).join('');
     const btn = $('#add-submit'); if (btn) { btn.textContent = items.length ? `${items.length}개 추가` : '추가'; btn.disabled = !items.length; }
   }
   function readEv() {
@@ -955,11 +991,14 @@
     const synced = S.settings.cal_synced_at ? new Date(S.settings.cal_synced_at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '아직 없음';
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !navigator.standalone;
     const theme = ls.get('weekly-theme', 'dark');
-    const mc = myColor(), gc = gcolor(mc);
+    const mc = myColor(), gc = gcolor(mc), clients = allClients();
     return head('설정')
       + `<div class="sh-sec"><label class="field"><span>내 이름</span><input data-field="myname" value="${esc(S.me?.display_name || '')}" placeholder="예: 동준"></label>
         <p class="hint">${esc(S.session?.user.email || '')}</p></div>
       <div class="sh-sec"><p class="sh-label">🎨 화면</p><div class="seg">${[['dark', '다크'], ['light', '라이트'], ['auto', '기기 설정']].map(([v, l]) => `<button type="button" data-act="theme" data-v="${v}" class="${theme === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div class="sh-sec"><p class="sh-label">🏷️ 클라이언트 색 <span>· 제목 맨 앞 [ ]로 구분, 모든 기기에 같이 적용</span></p>
+        ${clients.length ? `<div class="ccolors">${clients.map(c => { const cur = clientColor(c); return `<div class="crow" ${kc(c)}><b>${esc(c)}</b><div class="cpal">${PALETTE.map(x => `<button type="button" data-act="client-color" data-c="${esc(c)}" data-color="${x}" style="--sw:${x}" class="${cur === x || (cur === 'var(--k-personal)' && x === GREEN) ? 'on' : ''}" aria-label="${esc(c)} 색 바꾸기"></button>`).join('')}</div></div>`; }).join('')}</div>`
+          : '<p class="hint">아직 [ ]로 구분한 작업이 없어요. 예: [교촌] DID 편집</p>'}</div>
       <div class="sh-sec"><p class="sh-label">📅 구글 캘린더 연결 <span>· 읽기 + 추가만, 삭제 없음</span></p>
         <label class="field"><span>연결 주소 (Apps Script 웹앱 URL)</span><input type="password" data-field="gas_url" value="${esc(S.settings.gas_url || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" spellcheck="false"></label>
         <label class="field" style="margin-top:8px"><span>연결 비밀키 (스크립트의 TOKEN과 같은 값)</span><input type="password" data-field="gas_token" value="${esc(S.settings.gas_token || '')}" autocomplete="off" spellcheck="false"></label>
@@ -1000,12 +1039,13 @@
         let val = typeof v === 'string' ? v.trim() : v;
         if (f === 'title' && !val) { refreshSheet(); return; }
         if (val === '') val = null;
-        updateTask(t, { [f]: val });
+        updateTask(t, f === 'title' ? { title: val, project: splitClient(val)[0] } : { [f]: val });
+        if (f === 'title') refreshSheet();
       }
     } else if (sh.type === 'plan') {
       const p = planById(sh.id); if (!p) return;
       if (f === 'goal') updatePlan(p, { goal: v.trim() || null });
-      if (f === 'ptitle' && v.trim()) updatePlan(p, { title: v.trim() });
+      if (f === 'ptitle' && v.trim()) { updatePlan(p, { title: v.trim() }); refreshSheet(); }
       if (f === 'pdone') togglePlan(p, v);
     } else if (sh.type === 'memo') {
       if (f === 'daymemo') saveMemo(sh.id, v, true);
@@ -1069,8 +1109,7 @@
     setTimeout(() => { const art = $$('.day')[(fromYmd(d).getDay() + 6) % 7]; if (art) art.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 350);
   };
   A['toggle-tray'] = () => { ls.set('weekly-tray-collapsed', !ls.get('weekly-tray-collapsed', false)); renderTray(); };
-  A.filter = a => { S.filter = S.filter === a.dataset.v ? 'all' : a.dataset.v; renderTray(); };
-  A.kfilter = a => { const v = a.dataset.v; if (v === 'all') { S.kindFilter = 'all'; S.filter = 'all'; } else S.kindFilter = S.kindFilter === v ? 'all' : v; renderTray(); };
+  A.filter = a => { const v = a.dataset.v; S.filter = v === 'all' || S.filter === v ? 'all' : v; renderTray(); };
   A['open-task'] = (a, id) => { const t = taskById(id); if (t) openSheet(t.source === 'gcal' ? 'event' : 'task', id); };
   A['open-event'] = (a, id) => { const t = taskById(id); if (t) openSheet(t.source === 'gcal' ? 'event' : 'task', id); };
   A['open-plan'] = (a, id) => openSheet('plan', id);
@@ -1080,8 +1119,8 @@
     const ta = $('#sheet-body .memo-area');
     if (ta) { ta.focus({ preventScroll: true }); ta.setSelectionRange(ta.value.length, ta.value.length); }
   };
-  A['open-add'] = () => openSheet('add', null, { mode: 'task', target: '', kind: '편집' });
-  A['add-event-on'] = a => openSheet('add', null, { mode: 'event', ev: { kind: '촬영', date: a.dataset.day } });
+  A['open-add'] = () => openSheet('add', null, { mode: 'task', target: '' });
+  A['add-event-on'] = a => openSheet('add', null, { mode: 'event', ev: { date: a.dataset.day } });
   A['open-settings'] = () => openSheet('settings');
   A['close-sheet'] = () => closeSheet();
   A['toggle-plan'] = (a, id) => { const p = planById(id); if (p) togglePlan(p); };
@@ -1099,15 +1138,10 @@
     render(); persist(ops);
     toast(`${items.length}개를 오늘로 옮겼어요`);
   };
-  A['set-kind'] = a => {
-    const sh = S.sheet, k = a.dataset.k; if (!sh) return;
-    if (sh.type === 'task' || sh.type === 'event') { const t = taskById(sh.id); if (t) updateTask(t, { kind: k }); }
-    if (sh.type === 'plan') {
-      const p = planById(sh.id); if (!p) return;
-      const t = p.task_id && taskById(p.task_id);
-      if (t) updateTask(t, { kind: k }); else updatePlan(p, { kind: k });
-    }
-    refreshSheet();
+  A['client-color'] = a => {
+    const c = a.dataset.c, v = a.dataset.color; if (!c || !isHex(v)) return;
+    saveSetting('client_colors', JSON.stringify({ ...clientColors(), [c]: v }));
+    render(); refreshSheet();
   };
   A['task-status'] = a => {
     const t = taskById(a.dataset.tid || S.sheet?.id); if (!t) return;
@@ -1144,7 +1178,7 @@
   A['plan-move'] = a => { const p = planById(S.sheet?.id); if (!p || p.day === a.dataset.day) return; const ops = movePlan(p.id, a.dataset.day); render(); refreshSheet(); persist(ops); toast(`${dowOf(a.dataset.day)}요일로 옮겼어요`); };
   A['plan-copy'] = a => {
     const p = planById(S.sheet?.id); if (!p) return;
-    const ops = p.task_id ? assignTask(p.task_id, a.dataset.day, Infinity, p.goal) : addFreePlan(p.title, a.dataset.day, p.kind);
+    const ops = p.task_id ? assignTask(p.task_id, a.dataset.day, Infinity, p.goal) : addFreePlan(p.title, a.dataset.day);
     render(); refreshSheet(); persist(ops); toast(`${dowOf(a.dataset.day)}요일에도 추가했어요`);
   };
   A['plan-remove'] = () => {
@@ -1161,8 +1195,6 @@
   };
   A['plan-open-task'] = () => { const p = planById(S.sheet?.id); if (p?.task_id) openSheet('task', p.task_id); };
   A['add-mode'] = a => { if (!S.sheet) return; if (S.sheet.mode === 'event') readEv(); else S.sheet.text = $('#add-text')?.value || ''; S.sheet.mode = a.dataset.v; refreshSheet(); };
-  A['add-kind'] = a => { if (!S.sheet) return; S.sheet.kind = a.dataset.k; S.sheet.text = $('#add-text')?.value || ''; refreshSheet(); };
-  A['ev-kind'] = a => { if (!S.sheet?.ev) return; readEv(); S.sheet.ev.kind = a.dataset.k; refreshSheet(); };
   A['add-target'] = a => { if (!S.sheet) return; S.sheet.target = a.dataset.day || ''; S.sheet.text = $('#add-text')?.value || ''; refreshSheet(); };
   A['add-submit'] = () => {
     const items = addItems();

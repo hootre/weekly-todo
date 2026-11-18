@@ -42,10 +42,19 @@
     color-scheme: light;
   }
 }
-.k-shoot { --kc: var(--k-shoot); }
-.k-edit { --kc: var(--k-edit); }
-.k-personal { --kc: var(--k-personal); }
-.k-none { --kc: var(--k-none); }
+/* 클라이언트 색: 항목마다 style="--kc:…"로 넣어요. 안 넣은 곳은 회색 */
+:root { --kc: var(--k-none); }
+.ctag { font-weight: 850; color: color-mix(in srgb, var(--kc) 82%, var(--text)); margin-right: 5px; }
+.client-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; margin: -2px 0 12px; }
+.client-line b { color: color-mix(in srgb, var(--kc) 82%, var(--text)); }
+.client-line > span:not(.kdot) { color: var(--muted); }
+.client-line small { color: var(--muted); font-size: 12px; }
+.ccolors { display: grid; gap: 10px; }
+.crow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.crow b { min-width: 64px; font-size: 14px; color: color-mix(in srgb, var(--kc) 82%, var(--text)); }
+.cpal { display: flex; flex-wrap: wrap; gap: 6px; }
+.cpal button { width: 22px; height: 22px; border-radius: 50%; background: var(--sw); }
+.cpal button.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; }
@@ -362,10 +371,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
 .seg button { height: 38px; padding: 0 13px; border-radius: 11px; border: 1px solid var(--line); background: var(--surface-2); font-size: 14px; font-weight: 650; }
 .seg button.on { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
 .seg button.on[data-s="완료"] { background: var(--ok); border-color: var(--ok); color: #fff; }
-.kseg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.kseg button { height: 44px; border-radius: 12px; border: 1.5px solid color-mix(in srgb, var(--kc) 45%, var(--line)); background: color-mix(in srgb, var(--kc) 8%, var(--surface-2)); color: var(--kc); font-weight: 800; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
-.kseg button.on { background: var(--kc); border-color: var(--kc); color: #fff; }
-.kseg button.on .kdot { background: #fff; }
 .days7 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
 .days7 button { height: 50px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); display: grid; place-items: center; line-height: 1.1; font-weight: 750; font-size: 14px; }
 .days7 button small { font-size: 11px; color: var(--muted); font-weight: 650; }
