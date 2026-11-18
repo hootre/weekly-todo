@@ -96,12 +96,26 @@
     ? ymd(S.month) === ymd(firstOfMonth(new Date()))
     : ymd(S.weekStart) === ymd(mondayOf(new Date())));
 
-  function backlogTasks(ignoreFilter) {
-    const days = new Set(periodDays());
-    const planned = new Set(S.plans.filter(p => p.task_id && days.has(p.day)).map(p => p.task_id));
-    return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && !planned.has(t.id)
-      && (ignoreFilter || ((S.filter === 'all' || (t.project || '') === S.filter) && (S.kindFilter === 'all' || kindOfTask(t) === S.kindFilter))))
-      .sort(bySort);
+  const matchFilter = t => (S.filter === 'all' || (t.project || '') === S.filter) && (S.kindFilter === 'all' || kindOfTask(t) === S.kindFilter);
+  // 진행 중인 작업: 완료 안 된 내 작업 전부 (요일 배정 여부와 상관없이)
+  function doingTasks(ignoreFilter) {
+    return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && (ignoreFilter || matchFilter(t))).sort(bySort);
+  }
+  function doneTasks(ignoreFilter) {
+    return S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료' && (ignoreFilter || matchFilter(t)))
+      .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  }
+  // 이 작업을 다음에 하기로 한 날 (오늘부터, 아직 체크 안 한 것)
+  function nextPlanDay(taskId) {
+    const td = today();
+    return S.plans.reduce((m, p) => (p.task_id === taskId && !p.done && p.day >= td && (!m || p.day < m) ? p.day : m), null);
+  }
+  function whenLabel(d) {
+    const now = new Date();
+    if (d === today()) return '오늘';
+    if (d === ymd(addDays(now, 1))) return '내일';
+    if (d <= ymd(addDays(mondayOf(now), 6))) return dowOf(d) + '요일';
+    return `${md(d)}(${dowOf(d)})`;
   }
   function upcomingEvents() {
     const pd = periodDays(), end = pd[pd.length - 1], lim = ymd(addDays(fromYmd(end), 42));
@@ -579,32 +593,42 @@
     const label = n === 0 ? 'D-DAY' : n > 0 ? `D-${n}` : `D+${-n}`;
     return `<span class="dday ${n >= 0 && n <= 2 ? 'soon' : ''}">${label}</span>`;
   }
-  function chipHTML(t) {
-    return `<li class="item chip ${kindCls(kindOfTask(t))}" data-kind="task" data-id="${t.id}" data-act="open-task">
+  function doingHTML(t) {
+    const nx = nextPlanDay(t.id);
+    const when = nx ? `<span class="when ${nx === today() ? 'now' : ''}">${whenLabel(nx)}</span>` : '<span class="when none">미배정</span>';
+    return `<li class="item chip ${kindCls(kindOfTask(t))}" data-kind="task" data-id="${t.id}" data-act="open-task">${when}
       <span class="t">${esc(t.title)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
   }
+  const DONE_SHOW = 6;
   function renderTray() {
     const collapsed = !!ls.get('weekly-tray-collapsed', false);
     $('#tray').classList.toggle('collapsed', collapsed);
     $('#btn-tray').textContent = collapsed ? '펼치기' : '접기';
-    const all = backlogTasks(true);
+    const all = doingTasks(true);
     const projects = [...new Set(S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료').map(t => t.project || ''))].filter(Boolean);
     if (S.filter !== 'all' && !projects.includes(S.filter)) S.filter = 'all';
     const kindChips = [`<button class="filter ${S.kindFilter === 'all' && S.filter === 'all' ? 'on' : ''}" data-act="kfilter" data-v="all">전체</button>`,
       ...KINDS.map(k => `<button class="filter kind ${kindCls(k)} ${S.kindFilter === k ? 'on' : ''}" data-act="kfilter" data-v="${k}"><i></i>${k}</button>`)];
     const projChips = projects.length >= 2 ? ['<span class="filter-sep"></span>', ...projects.map(p => `<button class="filter ${S.filter === p ? 'on' : ''}" data-act="filter" data-v="${esc(p)}">${esc(p)}</button>`)] : [];
     $('#filters').innerHTML = [...kindChips, ...projChips].join('');
-    const list = backlogTasks();
-    $('#backlog').innerHTML = list.map(chipHTML).join('');
+    // 진행 중인 작업
+    const list = doingTasks(), bl = $('#backlog');
+    bl.dataset.empty = all.length ? '이 조건의 진행 중 작업은 없어요' : '진행 중인 작업이 없어요';
+    bl.innerHTML = list.map(doingHTML).join('');
     $('#backlog-count').textContent = all.length;
-    $('#backlog-hint').hidden = !list.length;
+    $('#doing-count').textContent = list.length;
+    $('#backlog-hint').hidden = !list.some(t => !nextPlanDay(t.id));
+    // 완료된 작업
+    const done = doneTasks(), doneAll = doneTasks(true).length;
+    $('#done-count').textContent = done.length;
+    $('#done-list').innerHTML = (S.doneAll ? done : done.slice(0, DONE_SHOW)).map(t => `<li class="${kindCls(kindOfTask(t))}" data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${esc(t.title)}</span></li>`).join('')
+      + (done.length > DONE_SHOW ? `<li class="more" data-act="toggle-done">${S.doneAll ? '접기' : `+${done.length - DONE_SHOW}개 더 보기`}</li>` : '');
+    $('#done-archive').hidden = !doneAll;
+    $('#done-archive').textContent = `${doneAll}개 보관`;
+    // 다가오는 캘린더 일정 (맨 아래)
     const up = upcomingEvents();
     $('#upcoming').innerHTML = up.map(t => `<li class="item chip cal ${kindCls(kindOfTask(t))}" data-kind="task" data-id="${t.id}" data-act="open-event">${ddayHTML(t.due_date)}<span class="ktag">${kindOfTask(t)}</span><span class="t">${md(t.due_date)}(${dowOf(t.due_date)}) ${esc(compactTitle(t.title))}</span></li>`).join('');
     $('#upcoming-count').textContent = up.length;
-    const done = S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료').sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
-    $('#done-count').textContent = done.length;
-    $('#done-list').innerHTML = done.slice(0, 12).map(t => `<li class="${kindCls(kindOfTask(t))}" data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${esc(t.title)}</span></li>`).join('')
-      + (done.length ? `<li class="more" data-act="archive-done">완료 ${done.length}개 모두 보관하기</li>` : '');
   }
   function autosize(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
   function renderWeekNote() {
@@ -727,7 +751,7 @@
         ops = planToBacklog(id);
         if (p && !p.task_id) { seq = ops; ops = []; }
       } else if (to.id === 'backlog' && kind === 'task') {
-        const list = backlogTasks(); const [m] = list.splice(evt.oldIndex, 1); list.splice(evt.newIndex, 0, m);
+        const list = doingTasks(); const [m] = list.splice(evt.oldIndex, 1); list.splice(evt.newIndex, 0, m);
         list.forEach((t, i) => { const s = (i + 1) * 10; if (t.sort !== s) { t.sort = s; ops.push({ op: 'update', table: 'tasks', id: t.id, row: { sort: s } }); } });
       }
     }
@@ -1108,6 +1132,7 @@
     S.tasks = S.tasks.filter(x => x !== t); S.plans = S.plans.filter(p => p.task_id !== t.id);
     closeSheet(); render(); persist([{ op: 'delete', table: 'tasks', id: t.id }]);
   };
+  A['toggle-done'] = () => { S.doneAll = !S.doneAll; renderTray(); };
   A['archive-done'] = () => {
     const done = S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료');
     if (!done.length || !confirm(`완료된 작업 ${done.length}개를 보관할까요? (목록에서 숨겨져요)`)) return;

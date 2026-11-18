@@ -19,7 +19,7 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-  <link rel="stylesheet" href="css/app.css?v=9">
+  <link rel="stylesheet" href="css/app.css?v=10">
 </head>
 <body>
   <!-- 로딩 -->
@@ -110,15 +110,20 @@
         </div>
         <div id="filters" class="filters"></div>
         <div class="tray-body" id="tray-body">
-          <ul id="backlog" class="chips" data-list="backlog"></ul>
-          <p class="hint" id="backlog-hint">길게 눌러 요일로 끌어다 놓거나, 눌러서 요일을 고르세요.</p>
+          <div class="tray-top">
+            <div class="tsec tsec-doing">
+              <h3 class="tsec-h"><i class="live"></i>진행 중인 작업 <span id="doing-count" class="count"></span></h3>
+              <ul id="backlog" class="chips" data-list="backlog"></ul>
+              <p class="hint" id="backlog-hint">미배정 작업은 길게 눌러 요일로 끌어다 놓거나, 눌러서 요일을 고르세요.</p>
+            </div>
+            <div class="tsec tsec-done" id="done-wrap">
+              <h3 class="tsec-h">✓ 완료된 작업 <span id="done-count" class="count"></span><span class="spacer"></span><button class="link-btn" type="button" id="done-archive" data-act="archive-done" hidden></button></h3>
+              <ul id="done-list" class="done-list"></ul>
+            </div>
+          </div>
           <details class="sub" id="upcoming-wrap">
             <summary>📅 다가오는 캘린더 일정 <span id="upcoming-count" class="count"></span></summary>
             <ul id="upcoming" class="chips" data-list="upcoming"></ul>
-          </details>
-          <details class="sub" id="done-wrap">
-            <summary>✓ 완료된 작업 <span id="done-count" class="count"></span></summary>
-            <ul id="done-list" class="done-list"></ul>
           </details>
         </div>
       </section>
@@ -158,7 +163,7 @@
 
   <script src="vendor/supabase.js"></script>
   <script src="vendor/Sortable.min.js"></script>
-  <script src="js/config.js?v=9"></script>
-  <script src="js/app.js?v=9"></script>
+  <script src="js/config.js?v=10"></script>
+  <script src="js/app.js?v=10"></script>
 </body>
 </html>

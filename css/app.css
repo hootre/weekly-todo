@@ -194,15 +194,33 @@ body.is-dragging .strip-day { border-style: dashed; border-color: var(--primary)
 .pill[data-s="수정대기"] { color: #ffb347; background: color-mix(in srgb, #ffb347 16%, var(--surface-2)); }
 .pill[data-s="완료"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, var(--surface-2)); }
 
+/* 진행 중 · 완료 (트레이 맨 위) */
+.tray-top { display: grid; }
+.tsec { min-width: 0; }
+.tsec-done { border-top: 1px dashed var(--line); margin-top: 4px; }
+.tsec-h { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 750; margin: 10px 2px 0; white-space: nowrap; }
+.tsec-done .tsec-h { color: var(--muted); }
+.live { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); flex: none; }
+#backlog:empty::before { content: attr(data-empty); }
+.when { font-size: 11px; font-weight: 800; padding: 1px 6px; border-radius: 6px; flex: none; color: var(--text); background: var(--surface-3); }
+.when.now { color: var(--primary-ink); background: var(--primary); }
+.when.none { color: var(--muted); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.link-btn { font-size: 12px; font-weight: 600; color: var(--muted); padding: 2px 4px; text-decoration: underline; text-underline-offset: 2px; }
+
 details.sub { border-top: 1px dashed var(--line); padding: 8px 2px 2px; margin-top: 4px; }
 details.sub summary { font-size: 13px; font-weight: 650; color: var(--muted); cursor: pointer; list-style: none; padding: 4px 0; }
 details.sub summary::-webkit-details-marker { display: none; }
 details.sub summary::after { content: "›"; display: inline-block; margin-left: 6px; transition: transform .15s; }
 details.sub[open] summary::after { transform: rotate(90deg); }
-.done-list { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; }
-.done-list li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); font-size: 14px; color: var(--muted); cursor: pointer; }
-.done-list li .t { text-decoration: line-through; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.done-list .more { justify-content: center; text-decoration: none; }
+.done-list { list-style: none; margin: 8px 0 6px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.done-list:empty::before { content: "아직 완료한 작업이 없어요"; color: var(--muted); font-size: 13px; padding: 4px 4px; }
+.done-list li { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 7px 11px 7px 9px; border-radius: 10px; background: var(--surface-2); font-size: 13px; color: var(--muted); cursor: pointer; }
+.done-list li .t { text-decoration: line-through; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.done-list .more { background: transparent; box-shadow: inset 0 0 0 1px var(--line); font-weight: 650; }
+@media (min-width: 900px) {
+  .tray-top { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; }
+  .tsec-done { border-top: 0; margin-top: 0; border-left: 1px dashed var(--line); padding-left: 16px; }
+}
 
 /* 주간 메모 */
 .week-note { padding: 4px 6px; }
