@@ -97,9 +97,11 @@
     : ymd(S.weekStart) === ymd(mondayOf(new Date())));
 
   const matchFilter = t => (S.filter === 'all' || (t.project || '') === S.filter) && (S.kindFilter === 'all' || kindOfTask(t) === S.kindFilter);
-  // 진행 중인 작업: 완료 안 된 내 작업 전부 (요일 배정 여부와 상관없이)
+  // 진행 중인 작업: 완료 안 된 내 작업 전부 (요일 배정 여부와 상관없이), 다음 할 날이 가까운 순 · 미배정은 맨 뒤
   function doingTasks(ignoreFilter) {
-    return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && (ignoreFilter || matchFilter(t))).sort(bySort);
+    return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && (ignoreFilter || matchFilter(t)))
+      .map(t => [t, nextPlanDay(t.id) || '9999'])
+      .sort((a, b) => a[1].localeCompare(b[1]) || bySort(a[0], b[0])).map(x => x[0]);
   }
   function doneTasks(ignoreFilter) {
     return S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료' && (ignoreFilter || matchFilter(t)))
@@ -731,7 +733,8 @@
       onStart() { S.dragging = true; document.body.classList.add('is-dragging'); haptic(10); },
       onEnd: onDragEnd,
     };
-    Sortable.create($('#backlog'), { ...common, group: { name: 'board', pull: true, put: (to, from, el) => el.dataset.kind === 'plan' } });
+    // 진행 중 목록은 다음 할 날 순서로 자동 정렬 → 목록 안에서 순서 바꾸기는 끔 (요일로 끌어가기 · 요일에서 되돌리기는 그대로)
+    Sortable.create($('#backlog'), { ...common, sort: false, group: { name: 'board', pull: true, put: (to, from, el) => el.dataset.kind === 'plan' } });
     Sortable.create($('#upcoming'), { ...common, sort: false, group: { name: 'board', pull: 'clone', put: false } });
     $$('.day-list').forEach(el => Sortable.create(el, { ...common, group: { name: 'board', pull: true, put: true } }));
     $$('.strip-drop, .mdrop').forEach(el => Sortable.create(el, { ...common, sort: false, draggable: '.never-drag', emptyInsertThreshold: 0, group: { name: 'board', pull: false, put: true } }));
@@ -750,9 +753,6 @@
         const p = planById(id);
         ops = planToBacklog(id);
         if (p && !p.task_id) { seq = ops; ops = []; }
-      } else if (to.id === 'backlog' && kind === 'task') {
-        const list = doingTasks(); const [m] = list.splice(evt.oldIndex, 1); list.splice(evt.newIndex, 0, m);
-        list.forEach((t, i) => { const s = (i + 1) * 10; if (t.sort !== s) { t.sort = s; ops.push({ op: 'update', table: 'tasks', id: t.id, row: { sort: s } }); } });
       }
     }
     render();

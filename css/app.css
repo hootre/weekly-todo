@@ -169,7 +169,7 @@ body.is-dragging .strip-day { border-style: dashed; border-color: var(--primary)
 .filter.kind.on { background: var(--kc); color: #fff; border-color: var(--kc); }
 .filter.kind.on i { background: #fff; }
 .filter-sep { flex: none; width: 1px; background: var(--line); margin: 4px 2px; }
-.tray-body { max-height: 46vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px; overscroll-behavior: contain; }
+.tray-body { max-height: 66vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px; overscroll-behavior: contain; }
 .chips { list-style: none; margin: 8px 0 4px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; min-height: 44px; }
 .chips:empty::before { content: "모두 배정했어요 👏"; color: var(--muted); font-size: 13px; padding: 10px 4px; }
 #upcoming:empty::before { content: "다가오는 일정이 없어요"; }
