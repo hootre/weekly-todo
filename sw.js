@@ -1,6 +1,6 @@
 // 위클리 service worker — 네트워크 우선, 오프라인이면 캐시
-const CACHE = 'weekly-v13';
-const SHELL = ['./', 'index.html', 'css/app.css?v=13', 'js/app.js?v=13', 'js/config.js?v=13', 'vendor/supabase.js', 'vendor/Sortable.min.js', 'icons/icon.svg', 'manifest.webmanifest'];
+const CACHE = 'weekly-v14';
+const SHELL = ['./', 'index.html', 'css/app.css?v=14', 'js/app.js?v=14', 'js/config.js?v=14', 'vendor/supabase.js', 'vendor/Sortable.min.js', 'icons/icon.svg', 'manifest.webmanifest'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });

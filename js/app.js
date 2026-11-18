@@ -85,10 +85,14 @@
   }
   const clientOf = t => (t ? splitClient(t.title)[0] : null);
   const clientOfPlan = p => { const t = p.task_id && taskById(p.task_id); return t ? clientOf(t) : splitClient(p.title)[0]; };
-  let ccCache = { raw: null, map: {} };
+  let ccCache = { raw: null, map: {}, free: PALETTE[0] };
   function clientColors() {
     const raw = S.settings.client_colors || '';
-    if (ccCache.raw !== raw) { let map = {}; try { map = JSON.parse(raw || '{}') || {}; } catch (_) { /* noop */ } ccCache = { raw, map }; }
+    if (ccCache.raw !== raw) {
+      let map = {}; try { map = JSON.parse(raw || '{}') || {}; } catch (_) { /* noop */ }
+      const used = new Set([GREEN, ...Object.values(map)]);
+      ccCache = { raw, map, free: PALETTE.find(x => !used.has(x)) || null };
+    }
     return ccCache.map;
   }
   const isHex = v => /^#[0-9a-f]{6}$/i.test(String(v || ''));
@@ -97,7 +101,8 @@
     if (!c) return 'var(--k-none)';
     const v = clientColors()[c];
     if (isHex(v)) return v;
-    return c === PERSONAL ? 'var(--k-personal)' : hashColor(c);
+    // 아직 색이 안 정해진 새 클라이언트: 저장될 때 받을 빈 색으로 미리 보여줌
+    return c === PERSONAL ? 'var(--k-personal)' : (ccCache.free || hashColor(c));
   }
   const kc = c => `style="--kc:${clientColor(c)}"`;
   // 제목 표시: [클라이언트]는 색 글씨로, 나머지는 그대로 (캘린더 일정은 끝의 _동준 떼고)
