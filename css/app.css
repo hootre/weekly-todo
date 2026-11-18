@@ -120,6 +120,10 @@ body.view-month .strip { display: none; }
 .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 4px; opacity: .85; transition: background .2s; flex: none; }
 .sync-dot.busy { background: #f5a524; }
 .sync-dot.err { background: var(--danger); }
+.sync-btn { position: relative; width: 38px; }
+.sync-btn svg { width: 20px; height: 20px; }
+.sync-btn .sync-dot { position: absolute; top: 7px; right: 6px; width: 7px; height: 7px; margin: 0; box-shadow: 0 0 0 2px var(--bg); }
+.sync-btn.spinning svg { animation: spin .9s linear infinite; }
 .progress { height: 4px; border-radius: 4px; background: var(--line); margin: 6px auto 8px; overflow: hidden; max-width: 1400px; }
 .progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--primary), #d29bff); border-radius: 4px; transition: width .4s ease; }
 

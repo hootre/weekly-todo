@@ -447,7 +447,7 @@
   async function syncCalendar(manual) {
     if (S.syncing) return;
     if (!gasLinked() && !S.settings.ics_url) { if (manual) toast('설정에서 구글 캘린더 연결을 먼저 해주세요'); return; }
-    S.syncing = true; setSync('busy');
+    S.syncing = true; setSync('busy'); spinSync(true);
     if (manual) toast('구글 캘린더에서 가져오는 중…');
     try {
       const from = ymd(addDays(new Date(), -14)), to = ymd(addDays(new Date(), 180));
@@ -468,16 +468,18 @@
       if (gone.length) await sb.from('tasks').update({ archived: true }).in('id', gone);
       await saveSetting('cal_synced_at', new Date().toISOString());
       if (manual) toast(`캘린더 일정 ${rows.length}개를 동기화했어요` + (fresh.length ? ` · 새로 ${fresh.length}개` : ''));
+      else if (fresh.length) toast(`구글 캘린더에서 새 일정 ${fresh.length}개를 가져왔어요`);
       await loadAll();
       refreshSheet();
     } catch (e) {
       setSync('err'); toast('캘린더 동기화 실패: ' + (e.message || e));
-    } finally { S.syncing = false; }
+    } finally { S.syncing = false; spinSync(false); }
   }
+  function spinSync(on) { $('#btn-sync')?.classList.toggle('spinning', on); }
+  // 앱을 열 때(새로고침 포함)마다 구글 캘린더에서 가져옴
   function maybeAutoSync() {
     if (!gasLinked() && !S.settings.ics_url) return;
-    const last = Date.parse(S.settings.cal_synced_at || 0) || 0;
-    if (Date.now() - last > 3 * 3600e3) syncCalendar(false);
+    syncCalendar(false);
   }
 
   // ---- 구글 캘린더에 일정 추가 (추가 전용 · 삭제 기능 없음) ----
@@ -1138,6 +1140,13 @@
   };
   A.theme = a => { const v = a.dataset.v; ls.set('weekly-theme', v); applyTheme(v); refreshSheet(); };
   A['cal-sync'] = () => syncCalendar(true);
+  // 상단 새로고침 버튼: 캘린더가 연결돼 있으면 캘린더까지, 아니면 할 일만 다시 불러옴
+  A['sync-now'] = async () => {
+    if (gasLinked() || S.settings.ics_url) return syncCalendar(true);
+    if (S.syncing) return;
+    S.syncing = true; spinSync(true);
+    try { await loadAll(); toast('새로고침했어요'); } finally { S.syncing = false; spinSync(false); }
+  };
   A['member-approve'] = a => {
     const m = S.members.find(x => x.user_id === a.dataset.id); if (!m) return;
     m.approved = a.dataset.v === '1'; refreshSheet();

@@ -19,7 +19,7 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-  <link rel="stylesheet" href="css/app.css?v=4">
+  <link rel="stylesheet" href="css/app.css?v=5">
 </head>
 <body>
   <!-- 로딩 -->
@@ -84,7 +84,10 @@
           <button data-act="view" data-v="week" role="tab">주</button>
           <button data-act="view" data-v="month" role="tab">월</button>
         </div>
-        <span id="sync-dot" class="sync-dot" title="동기화 상태"></span>
+        <button class="icon-btn sync-btn" id="btn-sync" data-act="sync-now" aria-label="새로고침 · 구글 캘린더 가져오기" title="새로고침 · 구글 캘린더 가져오기">
+          <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.5L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.5L20 16"/><path d="M20 21v-5h-5"/></svg>
+          <span id="sync-dot" class="sync-dot"></span>
+        </button>
         <button class="icon-btn" data-act="open-settings" aria-label="설정">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
         </button>
@@ -155,7 +158,7 @@
 
   <script src="vendor/supabase.js"></script>
   <script src="vendor/Sortable.min.js"></script>
-  <script src="js/config.js?v=4"></script>
-  <script src="js/app.js?v=4"></script>
+  <script src="js/config.js?v=5"></script>
+  <script src="js/app.js?v=5"></script>
 </body>
 </html>
