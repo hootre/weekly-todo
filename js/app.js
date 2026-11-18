@@ -32,6 +32,7 @@
   const haptic = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (_) { /* noop */ } };
   const short = (s, n = 14) => (s.length > n ? s.slice(0, n) + '…' : s);
   const ICON = {
+    pen: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
     check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   };
@@ -640,9 +641,11 @@
       art.classList.toggle('is-rest', !!nt?.rest);
       $('.day-head', art).innerHTML = `<button class="day-name" type="button" data-act="open-day" data-day="${d}"><span class="dn">${DOW[i]}</span><span class="dd">${md(d)}</span></button>`
         + (d === td ? '<span class="today-badge">오늘</span>' : '')
-        + (ps.length ? `<span class="day-count ${dn === ps.length ? 'all' : ''}">${dn === ps.length ? '✓ ' : ''}${dn}/${ps.length}</span>` : '');
+        + '<span class="spacer"></span>'
+        + (ps.length ? `<span class="day-count ${dn === ps.length ? 'all' : ''}">${dn === ps.length ? '✓ ' : ''}${dn}/${ps.length}</span>` : '')
+        + `<button class="memo-btn ${nt?.content ? 'has' : ''}" type="button" data-act="open-memo" data-day="${d}" aria-label="${DOW[i]}요일 메모">${ICON.pen}메모</button>`;
       $('.day-extra', art).innerHTML = (nt?.rest ? '<div class="rest-banner">🌙 휴식</div>' : '')
-        + (nt?.content ? `<div class="day-memo" data-act="open-day" data-day="${d}">${esc(nt.content)}</div>` : '');
+        + (nt?.content ? `<div class="day-memo" data-act="open-memo" data-day="${d}">${esc(nt.content)}</div>` : '');
       $('.events', art).innerHTML = eventsOn(d).map(eventHTML).join('');
       const ul = $('.day-list', art); ul.dataset.day = d; ul.innerHTML = ps.map(planHTML).join('');
       $('.quick-add input', art).placeholder = `+ ${DOW[i]}요일에 추가`;
@@ -663,6 +666,7 @@
       cell.classList.toggle('rest', !!nt?.rest);
       const dn = ps.filter(p => p.done).length;
       $('.mnum', cell).textContent = dt.getDate();
+      $('.mmemo', cell).hidden = !nt?.content;
       const c = $('.mcount', cell);
       c.textContent = ps.length ? `${dn}/${ps.length}` : '';
       c.classList.toggle('all', ps.length > 0 && dn === ps.length);
@@ -686,7 +690,7 @@
       strip.insertAdjacentHTML('beforeend', `<div class="strip-day" data-act="jump-day" data-i="${i}" role="button" tabindex="0"><span class="d"></span><span class="n"></span><span class="c"></span><ul class="strip-drop" data-strip="1"></ul></div>`);
     }
     for (let i = 0; i < 42; i++) {
-      mgrid.insertAdjacentHTML('beforeend', `<div class="mcell" data-act="open-mday" data-i="${i}" role="button" tabindex="0"><div class="mhead"><span class="mnum"></span><span class="mcount"></span></div><div class="mbody"></div><ul class="mdrop" data-strip="1"></ul></div>`);
+      mgrid.insertAdjacentHTML('beforeend', `<div class="mcell" data-act="open-mday" data-i="${i}" role="button" tabindex="0"><div class="mhead"><span class="mnum"></span><span class="mmemo" title="메모 있음" hidden>📝</span><span class="mcount"></span></div><div class="mbody"></div><ul class="mdrop" data-strip="1"></ul></div>`);
     }
     document.body.insertAdjacentHTML('beforeend', '<datalist id="task-titles"></datalist>');
   }
@@ -751,7 +755,7 @@
     afterSheet();
   }
   function refreshSheet() {
-    if (!S.sheet) return;
+    if (!S.sheet || S.sheet.type === 'memo') return;
     const panel = $('.sheet-panel'), top = panel.scrollTop;
     $('#sheet-body').innerHTML = SHEETS[S.sheet.type](S.sheet.id, S.sheet);
     panel.scrollTop = top;
@@ -839,10 +843,30 @@
         <div class="row" style="margin-top:10px"><button class="btn sm" type="button" data-act="add-event-on" data-day="${d}">📅 이날 일정 추가</button><button class="btn sm" type="button" data-act="goto-week" data-day="${d}">이 주 보기</button></div></div>` : '';
     return head(dayLabel(d)) + list
       + `<div class="sh-sec"><label class="toggle"><span>🌙 휴식일로 표시</span><input type="checkbox" data-field="rest" ${n.rest ? 'checked' : ''}></label></div>
-      <div class="sh-sec"><label class="field"><span>요일 메모</span><textarea data-field="daymemo" data-autosize rows="2" placeholder="예: 오후 미팅, 외근">${esc(n.content || '')}</textarea></label></div>
+      <div class="sh-sec"><label class="field"><span>이날 메모</span><textarea data-field="daymemo" data-autosize rows="2" placeholder="예: 오후 미팅, 외근">${esc(n.content || '')}</textarea></label></div>
       ${S.view === 'week' ? `<div class="sh-sec"><button class="btn block" type="button" data-act="add-event-on" data-day="${d}">📅 이날 구글 캘린더 일정 추가</button></div>` : ''}
       <div class="sh-actions"><button class="btn primary" type="button" data-act="close-sheet">완료</button></div>`;
   };
+
+  SHEETS.memo = d => {
+    const n = S.notes['day:' + d] || {};
+    return head(`📝 ${dayLabel(d)} 메모`)
+      + `<div class="sh-sec"><textarea class="input memo-area" data-field="daymemo" placeholder="이날 있었던 일, 해야 할 것, 아이디어… 자유롭게 적어요">${esc(n.content || '')}</textarea>
+      <p class="sh-label memo-state" id="memo-state">${n.content ? '저장돼 있어요' : '적으면 자동으로 저장돼요'}</p></div>
+      <div class="sh-actions"><button class="btn primary" type="button" data-act="close-sheet">완료</button></div>`;
+  };
+  let memoTimer;
+  function saveMemo(d, v, now) {
+    clearTimeout(memoTimer);
+    const run = () => {
+      const n = { ...note('day:' + d) }, val = v.trim() || null;
+      if ((n.content || null) === val) return;
+      n.content = val;
+      const st = $('#memo-state'); if (st) st.textContent = '저장 중…';
+      saveNote(n).then(ok => { const el = $('#memo-state'); if (el && S.sheet?.type === 'memo') el.textContent = ok ? '저장됐어요' : '저장 실패 · 다시 시도해주세요'; });
+    };
+    if (now) run(); else memoTimer = setTimeout(run, 700);
+  }
 
   SHEETS.add = (_, ctx) => {
     const mode = ctx.mode || 'task';
@@ -959,6 +983,8 @@
       if (f === 'goal') updatePlan(p, { goal: v.trim() || null });
       if (f === 'ptitle' && v.trim()) updatePlan(p, { title: v.trim() });
       if (f === 'pdone') togglePlan(p, v);
+    } else if (sh.type === 'memo') {
+      if (f === 'daymemo') saveMemo(sh.id, v, true);
     } else if (sh.type === 'day') {
       const n = { ...note('day:' + sh.id) };
       if (f === 'rest') n.rest = v;
@@ -1025,6 +1051,11 @@
   A['open-event'] = (a, id) => { const t = taskById(id); if (t) openSheet(t.source === 'gcal' ? 'event' : 'task', id); };
   A['open-plan'] = (a, id) => openSheet('plan', id);
   A['open-day'] = a => openSheet('day', a.dataset.day);
+  A['open-memo'] = a => {
+    openSheet('memo', a.dataset.day);
+    const ta = $('#sheet-body .memo-area');
+    if (ta) { ta.focus({ preventScroll: true }); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  };
   A['open-add'] = () => openSheet('add', null, { mode: 'task', target: '', kind: '편집' });
   A['add-event-on'] = a => openSheet('add', null, { mode: 'event', ev: { kind: '촬영', date: a.dataset.day } });
   A['open-settings'] = () => openSheet('settings');
@@ -1220,6 +1251,7 @@
       if (e.target.id === 'add-text') renderAddPreview();
       if (e.target.dataset.ef) updateFinalTitle();
       if (e.target.matches('textarea[data-autosize]')) autosize(e.target);
+      if (S.sheet?.type === 'memo' && e.target.dataset.field === 'daymemo') saveMemo(S.sheet.id, e.target.value);
     });
     body.addEventListener('keydown', e => {
       if (e.key === 'Enter' && e.target.matches('input.sh-title, input[data-field="goal"], input[data-ef]')) { e.preventDefault(); e.target.blur(); }
