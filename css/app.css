@@ -236,7 +236,7 @@ details.sub[open] summary::after { transform: rotate(90deg); }
 .memo-area { min-height: 200px; line-height: 1.55; resize: vertical; }
 .memo-state { margin: 8px 2px 0; }
 /* 요일 칸이 좁을 때(PC 7일 한 줄 등) 머리 줄을 줄임 */
-@container (max-width: 240px) {
+@container (max-width: 205px) {
   .day-head { gap: 4px; }
   .day-name { padding: 2px; gap: 4px; }
   .today-badge { display: none; }
