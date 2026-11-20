@@ -178,7 +178,8 @@ body.is-dragging .strip-day { border-style: dashed; border-color: var(--primary)
 .filter.kind.on { background: var(--kc); color: #fff; border-color: var(--kc); }
 .filter.kind.on i { background: #fff; }
 .filter-sep { flex: none; width: 1px; background: var(--line); margin: 4px 2px; }
-.tray-body { max-height: 66vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px; overscroll-behavior: contain; }
+.tray-body { margin: 0 -4px; padding: 0 4px; } /* 안쪽 스크롤 없음: 폰에서 화면 전체 스크롤이 막히지 않게 */
+.more-chip { display: inline-flex; align-items: center; min-height: 36px; padding: 6px 12px; border-radius: 12px; font-size: 13px; font-weight: 700; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; user-select: none; }
 .chips { list-style: none; margin: 8px 0 4px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; min-height: 44px; }
 .chips:empty::before { content: "모두 배정했어요 👏"; color: var(--muted); font-size: 13px; padding: 10px 4px; }
 #upcoming:empty::before { content: "다가오는 일정이 없어요"; }
@@ -438,7 +439,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
   .quick-add input::placeholder { font-size: 13px; }
   .item.plan { padding: 8px 8px 8px 6px; gap: 8px; }
   .item-title { font-size: 14px; }
-  .tray-body { max-height: none; }
   .mcell { min-height: 128px; }
 }
 @media (min-width: 1600px) {
@@ -452,7 +452,6 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
   .progress { margin: 4px auto 4px; }
   .strip { display: none; }
   .main { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
-  .tray-body { max-height: 60vh; }
   .sheet-panel { max-height: 96dvh; }
   .memo-area { min-height: 120px; }
 }

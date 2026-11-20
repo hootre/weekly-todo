@@ -655,7 +655,7 @@
     return `<li class="item chip ${cal ? 'cal' : ''}" ${kc(clientOf(t))} data-kind="task" data-id="${t.id}" data-act="${cal ? 'open-event' : 'open-task'}">${when}
       <span class="t">${titleHTML(t.title, cal)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${!cal && t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
   }
-  const DONE_SHOW = 6;
+  const DONE_SHOW = 6, DOING_SHOW = 6;
   function renderTray() {
     const collapsed = !!ls.get('weekly-tray-collapsed', false);
     $('#tray').classList.toggle('collapsed', collapsed);
@@ -671,7 +671,10 @@
     // 진행 중인 작업
     const list = doingTasks(), bl = $('#backlog');
     bl.dataset.empty = all.length ? '이 조건의 진행 중 작업은 없어요' : '진행 중인 작업이 없어요';
-    bl.innerHTML = list.map(doingHTML).join('');
+    // 폰에서는 가까운 순으로 몇 개만, 나머지는 '더 보기' (목록이 길어 아래로 내리기 힘들지 않게)
+    const phone = matchMedia('(max-width: 719px)').matches, cut = phone && !S.doingAll && list.length > DOING_SHOW;
+    bl.innerHTML = (cut ? list.slice(0, DOING_SHOW) : list).map(doingHTML).join('')
+      + (phone && list.length > DOING_SHOW ? `<li class="more-chip" data-act="toggle-doing">${S.doingAll ? '접기' : `+${list.length - DOING_SHOW}개 더 보기`}</li>` : '');
     $('#backlog-count').textContent = all.length;
     $('#doing-count').textContent = list.length;
     $('#backlog-hint').hidden = !list.some(t => t.source !== 'gcal' && !nextPlanDay(t.id));
@@ -1190,6 +1193,7 @@
     closeSheet(); render(); persist([{ op: 'delete', table: 'tasks', id: t.id }]);
   };
   A['toggle-done'] = () => { S.doneAll = !S.doneAll; renderTray(); };
+  A['toggle-doing'] = () => { S.doingAll = !S.doingAll; renderTray(); };
   A['archive-done'] = () => {
     const done = doneTasks(true);
     if (!done.length || !confirm(`완료된 작업 ${done.length}개를 보관할까요? (목록에서 숨겨져요 · 구글 캘린더 원본은 그대로)`)) return;
