@@ -681,8 +681,9 @@
     // 완료된 작업
     const done = doneTasks(), doneAll = doneTasks(true).length;
     $('#done-count').textContent = done.length;
-    $('#done-list').innerHTML = (S.doneAll ? done : done.slice(0, DONE_SHOW)).map(t => `<li ${kc(clientOf(t))} data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${titleHTML(t.title, t.source === 'gcal')}</span></li>`).join('')
-      + (done.length > DONE_SHOW ? `<li class="more" data-act="toggle-done">${S.doneAll ? '접기' : `+${done.length - DONE_SHOW}개 더 보기`}</li>` : '');
+    const dShow = phone ? 3 : DONE_SHOW; // 폰에서는 완료 3개만 (오늘 요일이 더 위에 보이게)
+    $('#done-list').innerHTML = (S.doneAll ? done : done.slice(0, dShow)).map(t => `<li ${kc(clientOf(t))} data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${titleHTML(t.title, t.source === 'gcal')}</span></li>`).join('')
+      + (done.length > dShow ? `<li class="more" data-act="toggle-done">${S.doneAll ? '접기' : `+${done.length - dShow}개 더 보기`}</li>` : '');
     $('#done-archive').hidden = !doneAll;
     $('#done-archive').textContent = `${doneAll}개 보관`;
     // 다가오는 캘린더 일정 (맨 아래)
