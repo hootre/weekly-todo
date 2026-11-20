@@ -59,7 +59,7 @@
     weekStart: mondayOf(new Date()), month: firstOfMonth(new Date()),
     tasks: [], plans: [], notes: {}, settings: {}, members: [],
     filter: 'all', dragging: false, pendingRender: false, lastDragEnd: 0,
-    sheet: null, prevStatus: {}, syncing: false, sortablesReady: false, followToday: true,
+    sheet: null, prevStatus: {}, syncing: false, sortablesReady: false, followToday: true, unfold: new Set(), lastSwipe: 0,
   };
   const taskById = id => S.tasks.find(t => t.id === id);
   const planById = id => S.plans.find(p => p.id === id);
@@ -139,15 +139,25 @@
     : ymd(S.weekStart) === ymd(mondayOf(new Date())));
 
   const matchFilter = t => S.filter === 'all' || clientOf(t) === S.filter;
-  // 진행 중인 작업: 완료 안 된 내 작업 전부 (요일 배정 여부와 상관없이), 다음 할 날이 가까운 순 · 미배정은 맨 뒤
+  // 진행 중으로 보여줄 캘린더 일정: 개인 일정 빼고, 안 끝났고, 오늘부터 7일 안에 하는 것 (앱에서 추가한 일정 포함)
+  const isDoingEvent = t => t.source === 'gcal' && t.status !== '완료' && clientOf(t) !== PERSONAL
+    && (t.end_date || t.due_date) >= today() && t.due_date <= ymd(addDays(new Date(), 6));
+  // 진행 중인 작업: 완료 안 된 내 작업 전부 (요일 배정 여부와 상관없이) + 이번 7일 캘린더 일정, 다음 할 날이 가까운 순 · 미배정은 맨 뒤
   function doingTasks(ignoreFilter) {
-    return S.tasks.filter(t => t.source !== 'gcal' && t.status !== '완료' && (ignoreFilter || matchFilter(t)))
-      .map(t => [t, nextPlanDay(t.id) || '9999'])
-      .sort((a, b) => a[1].localeCompare(b[1]) || bySort(a[0], b[0])).map(x => x[0]);
+    return S.tasks.filter(t => (t.source === 'gcal' ? isDoingEvent(t) : t.status !== '완료') && (ignoreFilter || matchFilter(t)))
+      .map(t => [t, nextDay(t) || '9999'])
+      .sort((a, b) => a[1].localeCompare(b[1]) || (a[0].source === 'gcal' ? -1 : 0) - (b[0].source === 'gcal' ? -1 : 0) || bySort(a[0], b[0])).map(x => x[0]);
   }
+  // 완료: 내 작업 + 최근 일주일 안에 완료 체크한 캘린더 일정
   function doneTasks(ignoreFilter) {
-    return S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료' && (ignoreFilter || matchFilter(t)))
+    const wk = ymd(addDays(new Date(), -7));
+    return S.tasks.filter(t => t.status === '완료' && (t.source !== 'gcal' || (t.end_date || t.due_date) >= wk) && (ignoreFilter || matchFilter(t)))
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  }
+  // 다음에 하는 날: 캘린더 일정은 일정 날짜(이미 시작했으면 오늘), 작업은 다음 배정일
+  function nextDay(t) {
+    if (t.source !== 'gcal') return nextPlanDay(t.id);
+    const td = today(); return t.due_date < td ? td : t.due_date;
   }
   // 이 작업을 다음에 하기로 한 날 (오늘부터, 아직 체크 안 한 것)
   function nextPlanDay(taskId) {
@@ -161,9 +171,10 @@
     if (d <= ymd(addDays(mondayOf(now), 6))) return dowOf(d) + '요일';
     return `${md(d)}(${dowOf(d)})`;
   }
+  // 다가오는 캘린더 일정: 진행 중에 안 들어간 앞으로 6주 일정 (개인 일정, 다음 주 이후 일정)
   function upcomingEvents() {
-    const pd = periodDays(), end = pd[pd.length - 1], lim = ymd(addDays(fromYmd(end), 42));
-    return S.tasks.filter(t => t.source === 'gcal' && t.status !== '완료' && t.due_date > end && t.due_date <= lim)
+    const td = today(), lim = ymd(addDays(new Date(), 42));
+    return S.tasks.filter(t => t.source === 'gcal' && t.status !== '완료' && t.due_date > td && t.due_date <= lim && !isDoingEvent(t))
       .sort((a, b) => a.due_date.localeCompare(b.due_date));
   }
   function eventsOn(d) {
@@ -639,10 +650,10 @@
     return `<span class="dday ${n >= 0 && n <= 2 ? 'soon' : ''}">${label}</span>`;
   }
   function doingHTML(t) {
-    const nx = nextPlanDay(t.id);
-    const when = nx ? `<span class="when ${nx === today() ? 'now' : ''}">${whenLabel(nx)}</span>` : '<span class="when none">미배정</span>';
-    return `<li class="item chip" ${kc(clientOf(t))} data-kind="task" data-id="${t.id}" data-act="open-task">${when}
-      <span class="t">${titleHTML(t.title)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
+    const cal = t.source === 'gcal', nx = nextDay(t);
+    const when = nx ? `<span class="when ${nx === today() ? 'now' : ''}">${cal ? '📅 ' : ''}${whenLabel(nx)}</span>` : '<span class="when none">미배정</span>';
+    return `<li class="item chip ${cal ? 'cal' : ''}" ${kc(clientOf(t))} data-kind="task" data-id="${t.id}" data-act="${cal ? 'open-event' : 'open-task'}">${when}
+      <span class="t">${titleHTML(t.title, cal)}</span>${t.status ? `<span class="pill" data-s="${esc(t.status)}">${esc(t.status)}</span>` : ''}${t.ok ? '<span class="okb">OK</span>' : ''}${!cal && t.due_date ? ddayHTML(t.due_date) : ''}</li>`;
   }
   const DONE_SHOW = 6;
   function renderTray() {
@@ -663,11 +674,11 @@
     bl.innerHTML = list.map(doingHTML).join('');
     $('#backlog-count').textContent = all.length;
     $('#doing-count').textContent = list.length;
-    $('#backlog-hint').hidden = !list.some(t => !nextPlanDay(t.id));
+    $('#backlog-hint').hidden = !list.some(t => t.source !== 'gcal' && !nextPlanDay(t.id));
     // 완료된 작업
     const done = doneTasks(), doneAll = doneTasks(true).length;
     $('#done-count').textContent = done.length;
-    $('#done-list').innerHTML = (S.doneAll ? done : done.slice(0, DONE_SHOW)).map(t => `<li ${kc(clientOf(t))} data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${titleHTML(t.title)}</span></li>`).join('')
+    $('#done-list').innerHTML = (S.doneAll ? done : done.slice(0, DONE_SHOW)).map(t => `<li ${kc(clientOf(t))} data-act="open-task" data-id="${t.id}"><span class="kdot"></span><span class="t">${titleHTML(t.title, t.source === 'gcal')}</span></li>`).join('')
       + (done.length > DONE_SHOW ? `<li class="more" data-act="toggle-done">${S.doneAll ? '접기' : `+${done.length - DONE_SHOW}개 더 보기`}</li>` : '');
     $('#done-archive').hidden = !doneAll;
     $('#done-archive').textContent = `${doneAll}개 보관`;
@@ -709,11 +720,17 @@
       art.classList.toggle('is-weekend', i >= 5);
       art.classList.toggle('is-past', d < td);
       art.classList.toggle('is-rest', !!nt?.rest);
-      $('.day-head', art).innerHTML = `<button class="day-name" type="button" data-act="open-day" data-day="${d}"><span class="dn">${DOW[i]}</span><span class="dd">${md(d)}</span></button>`
+      // 폰: 이번 주 지난 요일은 접어서 오늘이 바로 보이게 (눌러서 펼치기)
+      const foldable = isCurrentPeriod() && d < td, folded = foldable && !S.unfold.has(d);
+      art.classList.toggle('is-folded', folded);
+      const hd = $('.day-head', art);
+      if (folded) { hd.dataset.act = 'fold-day'; hd.dataset.day = d; } else hd.removeAttribute('data-act');
+      hd.innerHTML = `<button class="day-name" type="button" data-act="open-day" data-day="${d}"><span class="dn">${DOW[i]}</span><span class="dd">${md(d)}</span></button>`
         + (d === td ? '<span class="today-badge">오늘</span>' : '')
         + '<span class="spacer"></span>'
         + (ps.length ? `<span class="day-count ${dn === ps.length ? 'all' : ''}">${dn === ps.length ? '✓ ' : ''}${dn}/${ps.length}</span>` : '')
-        + `<button class="memo-btn ${nt?.content ? 'has' : ''}" type="button" data-act="open-memo" data-day="${d}" aria-label="${DOW[i]}요일 메모">${ICON.pen}<span>메모</span></button>`;
+        + `<button class="memo-btn ${nt?.content ? 'has' : ''}" type="button" data-act="open-memo" data-day="${d}" aria-label="${DOW[i]}요일 메모">${ICON.pen}<span>메모</span></button>`
+        + (foldable ? `<button class="fold-btn" type="button" data-act="fold-day" data-day="${d}" aria-expanded="${!folded}">${folded ? '펼치기' : '접기'}</button>` : '');
       $('.day-extra', art).innerHTML = (nt?.rest ? '<div class="rest-banner">🌙 휴식</div>' : '')
         + (nt?.content ? `<div class="day-memo" data-act="open-memo" data-day="${d}">${esc(nt.content)}</div>` : '');
       $('.events', art).innerHTML = eventsOn(d).map(eventHTML).join('');
@@ -1103,7 +1120,9 @@
   }
   A.view = a => { if (a.dataset.v !== S.view) setView(a.dataset.v); };
   A['jump-day'] = a => {
-    const art = $$('.day')[+a.dataset.i];
+    const i = +a.dataset.i, d = weekDays()[i];
+    if ($$('.day')[i]?.classList.contains('is-folded')) { S.unfold.add(d); renderWeek(); }
+    const art = $$('.day')[i];
     if (art) art.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   A['open-mday'] = a => openSheet('day', a.dataset.day);
@@ -1111,6 +1130,7 @@
     const d = a.dataset.day; closeSheet(); setView('week', d);
     setTimeout(() => { const art = $$('.day')[(fromYmd(d).getDay() + 6) % 7]; if (art) art.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 350);
   };
+  A['fold-day'] = a => { const d = a.dataset.day; if (!d) return; if (S.unfold.has(d)) S.unfold.delete(d); else S.unfold.add(d); renderWeek(); };
   A['toggle-tray'] = () => { ls.set('weekly-tray-collapsed', !ls.get('weekly-tray-collapsed', false)); renderTray(); };
   A.filter = a => { const v = a.dataset.v; S.filter = v === 'all' || S.filter === v ? 'all' : v; renderTray(); };
   A['open-task'] = (a, id) => { const t = taskById(id); if (t) openSheet(t.source === 'gcal' ? 'event' : 'task', id); };
@@ -1171,8 +1191,8 @@
   };
   A['toggle-done'] = () => { S.doneAll = !S.doneAll; renderTray(); };
   A['archive-done'] = () => {
-    const done = S.tasks.filter(t => t.source !== 'gcal' && t.status === '완료');
-    if (!done.length || !confirm(`완료된 작업 ${done.length}개를 보관할까요? (목록에서 숨겨져요)`)) return;
+    const done = doneTasks(true);
+    if (!done.length || !confirm(`완료된 작업 ${done.length}개를 보관할까요? (목록에서 숨겨져요 · 구글 캘린더 원본은 그대로)`)) return;
     const ids = new Set(done.map(t => t.id));
     S.tasks = S.tasks.filter(t => !ids.has(t.id)); render();
     persist(done.map(t => ({ op: 'update', table: 'tasks', id: t.id, row: { archived: true } })));
@@ -1259,12 +1279,43 @@
   };
 
   // ================= static wiring =================
+  // ---- 폰: 위쪽 바 · 주간 · 월간에서 좌우로 밀면 이전/다음 주 (월간이면 이전/다음 달) ----
+  function initSwipe() {
+    let sx = 0, sy = 0, st = 0, on = false;
+    document.addEventListener('touchstart', e => {
+      on = false;
+      if (e.touches.length !== 1 || S.sheet || $('#screen-app').hidden) return;
+      const el = e.target;
+      if (!el.closest('.topbar, #week, #month') || el.closest('input, textarea, select, .view-seg')) return;
+      const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now(); on = true;
+    }, { passive: true });
+    document.addEventListener('touchend', e => {
+      if (!on) return; on = false;
+      if (S.dragging || Date.now() - S.lastDragEnd < 400) return;
+      const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+      if (Date.now() - st > 700 || Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.8) return;
+      swipeNav(dx < 0 ? 1 : -1);
+    }, { passive: true });
+    document.addEventListener('touchcancel', () => { on = false; }, { passive: true });
+  }
+  function swipeNav(dir) {
+    S.lastSwipe = Date.now(); haptic(8);
+    nav(dir);
+    const cls = dir > 0 ? 'swipe-next' : 'swipe-prev';
+    for (const el of [$('#strip'), $(S.view === 'month' ? '#month' : '#week')]) {
+      el.classList.toggle('swipe-next', false); el.classList.toggle('swipe-prev', false);
+      void el.offsetWidth;
+      el.classList.add(cls);
+    }
+  }
   function initStatic() {
     buildSkeleton();
+    initSwipe();
     document.addEventListener('click', e => {
       const a = e.target.closest('[data-act]'); if (!a) return;
       const act = a.dataset.act;
       if (/^open-(task|event|plan|mday)$|^toggle-(plan|event)$/.test(act) && Date.now() - S.lastDragEnd < 350) return;
+      if (Date.now() - S.lastSwipe < 350) return;
       const fn = A[act]; if (!fn) return;
       const id = a.dataset.id || a.closest('[data-id]')?.dataset.id;
       fn(a, id, e);

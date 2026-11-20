@@ -469,7 +469,23 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; }
   .mcount { display: none; }
   .mi { font-size: 10px; line-height: 14px; padding: 0 2px 0 3px; letter-spacing: -0.04em; border-radius: 3px; }
   .mnum { font-size: 12px; }
+  /* 이번 주 지난 요일은 한 줄로 접기 → 할 일 바로 아래에 오늘이 보임 */
+  .fold-btn { display: inline-flex; align-items: center; gap: 3px; flex: none; white-space: nowrap; font-size: 12px; font-weight: 700; color: var(--muted); padding: 4px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
+  .fold-btn[aria-expanded="false"]::after { content: "▾"; font-size: 10px; }
+  .fold-btn[aria-expanded="true"]::after { content: "▴"; font-size: 10px; }
+  .day.is-folded { padding-top: 5px; padding-bottom: 5px; }
+  .day.is-folded > :not(.day-head) { display: none; }
+  .day.is-folded .day-head { padding-bottom: 2px; cursor: pointer; }
+  .day.is-folded + .day.is-folded { margin-top: -6px; }
 }
+.fold-btn { display: none; }
+@media (max-width: 719px) { .fold-btn { display: inline-flex; } }
+
+/* 좌우로 밀어서 주 · 달 넘길 때 살짝 밀려 들어오는 효과 */
+@keyframes swipe-next { from { transform: translateX(32px); opacity: .25; } to { transform: none; opacity: 1; } }
+@keyframes swipe-prev { from { transform: translateX(-32px); opacity: .25; } to { transform: none; opacity: 1; } }
+.swipe-next { animation: swipe-next .24s ease-out; }
+.swipe-prev { animation: swipe-prev .24s ease-out; }
 
 /* 구글 캘린더 색 점 */
 .gdot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--gc, #7986cb); vertical-align: -1px; margin: 0 3px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--gc, #7986cb) 30%, transparent); }
